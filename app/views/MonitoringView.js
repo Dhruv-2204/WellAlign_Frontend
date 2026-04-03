@@ -56,9 +56,16 @@ export const MonitoringView = {
     const route = useRoute();
 
     // View Mode State
-    const viewMode = ref('mode-select'); // 'mode-select' | 'monitoring' | 'report-view'
-    const selectedMode = ref('live'); // 'live' | 'timed'
-    const selectedDuration = ref(15); // minutes (5, 10, 15, 30, 45)
+    const viewMode = ref('setup'); // 'setup' | 'monitoring' | 'report-view'
+    const selectedDuration = ref(15); // minutes (5, 10, 15, 30, 45) or null for unlimited
+    const postureHoldSeconds = ref(5); // 3-10 seconds
+    const enabledAlerts = ref({
+      screenDistance: false,
+      shoulderAsymmetry: false,
+      headTilt: false
+    });
+    const showOnScreenAlerts = ref(false);
+    const timedSessionTotalSeconds = ref(null);
     
     // Monitoring State
     const isSessionActive = ref(false);
@@ -73,6 +80,8 @@ export const MonitoringView = {
       headForwardAngle: 0,
       headTiltAngle: 0,
       shoulderAsymmetry: 0,
+      faceDistancePercent: 0,
+      faceDistanceBaselineReady: false,
       verticalAlign: 0,
       slouchingScore: 0,
       positionQuality: 0,
@@ -87,11 +96,18 @@ export const MonitoringView = {
       const goodPosture = Math.max(0, Math.min(100, liveMetrics.value.positionQuality || 0));
       const headTilt = Math.max(0, Math.round(liveMetrics.value.headTiltAngle || 0));
       const shoulderAsymmetry = Math.max(0, Math.round(liveMetrics.value.shoulderAsymmetry || 0));
-      const forwardAngle = Math.max(0, Math.round(liveMetrics.value.headForwardAngle || 0));
+      const faceDistancePercent = Math.round(liveMetrics.value.faceDistancePercent || 0);
+      const faceDistanceAlarm = Math.max(0, faceDistancePercent);
 
       const headTiltQuality = Math.max(5, 100 - Math.min(100, Math.round((headTilt / 25) * 100)));
       const shoulderQuality = Math.max(5, 100 - Math.min(100, Math.round((shoulderAsymmetry / 20) * 100)));
-      const forwardQuality = Math.max(5, 100 - Math.min(100, Math.round((forwardAngle / 20) * 100)));
+      const distanceQuality = Math.max(5, 100 - Math.min(100, Math.round((faceDistanceAlarm / 35) * 100)));
+      const distanceBarWidth = liveMetrics.value.faceDistanceBaselineReady
+        ? distanceQuality
+        : 5;
+      const distanceText = liveMetrics.value.faceDistanceBaselineReady
+        ? (faceDistancePercent > 0 ? `+${faceDistancePercent}% closer` : `${faceDistancePercent}%`)
+        : 'Calibrating...';
 
       return [
         {
@@ -123,16 +139,38 @@ export const MonitoringView = {
             : 'linear-gradient(90deg,var(--warn),#f59e0b)'
         },
         {
-          key: 'forwardAngle',
-          label: 'Forward Angle',
-          valueText: `${forwardAngle}deg`,
-          width: forwardQuality,
-          color: forwardAngle <= 8 ? 'var(--accent2)' : 'var(--warn)',
-          gradient: forwardAngle <= 8
+          key: 'faceDistance',
+          label: 'Face Distance',
+          valueText: distanceText,
+          width: distanceBarWidth,
+          color: faceDistanceAlarm <= 15 ? 'var(--accent2)' : 'var(--warn)',
+          gradient: faceDistanceAlarm <= 15
             ? 'linear-gradient(90deg,var(--accent2),#5eead4)'
             : 'linear-gradient(90deg,var(--warn),#fbbf24)'
         }
       ];
+    });
+
+    const activeScreenAlerts = computed(() => {
+      const alerts = [];
+
+      if (enabledAlerts.value.screenDistance && liveMetrics.value.faceDistanceBaselineReady && (liveMetrics.value.faceDistancePercent || 0) > 15) {
+        alerts.push('Too close to screen');
+      }
+
+      const issueTypeToKey = {
+        HEAD_TILT: 'headTilt',
+        SHOULDER_ASYMMETRY: 'shoulderAsymmetry'
+      };
+
+      detectedIssues.value.forEach((issue) => {
+        const alertKey = issueTypeToKey[issue.type];
+        if (alertKey && enabledAlerts.value[alertKey]) {
+          alerts.push(issue.title);
+        }
+      });
+
+      return Array.from(new Set(alerts));
     });
 
     // Post-Session Report
@@ -154,14 +192,22 @@ export const MonitoringView = {
     let recordingIntervalId = null;
     let timerIntervalId = null;
 
-    // ========== SESSION MODE SELECTION ==========
+    const sessionLabel = computed(() => Number.isFinite(selectedDuration.value)
+      ? `${selectedDuration.value} minute timed session`
+      : 'Unlimited session (manual stop)');
+
+    // ========== SESSION SETUP ==========
     function startSession() {
-      resetPostureTracking();
+      resetPostureTracking({
+        holdDurationSeconds: postureHoldSeconds.value
+      });
 
       // Reset tracking
       sessionStartTime.value = Date.now();
       sessionElapsedTime.value = '00:00:00';
-      sessionCountdownTime.value = formatTimeRemaining(selectedMode.value === 'timed' ? selectedDuration.value * 60 : null);
+      const durationSeconds = Number.isFinite(selectedDuration.value) ? selectedDuration.value * 60 : null;
+      timedSessionTotalSeconds.value = durationSeconds;
+      sessionCountdownTime.value = formatTimeRemaining(durationSeconds);
       detectedIssues.value = [];
       issueHoldDurations.value = {};
       isSessionActive.value = true;
@@ -171,20 +217,16 @@ export const MonitoringView = {
       startPostureRecording();
 
       // Start recording session (creates internal session object)
-      const durationSeconds = selectedMode.value === 'timed' ? selectedDuration.value * 60 : null;
-      currentSession = startRecordingSession(selectedMode.value, durationSeconds);
+      const sessionMode = Number.isFinite(durationSeconds) ? 'timed' : 'live';
+      currentSession = startRecordingSession(sessionMode, durationSeconds);
 
       // Start timers
       startTimers();
 
       // NOW start camera (callback already ready)
+      window.setOverlayEnabled?.(showOnScreenAlerts.value);
       window.startCamera?.();
-      showStatusToast('Session Started', 'Live posture monitoring is active.', 'var(--accent)');
-    }
-
-    function cancelModeSelection() {
-      selectedMode.value = 'live';
-      selectedDuration.value = 15;
+      showStatusToast('Session Started', 'Posture monitoring is active.', 'var(--accent)');
     }
 
     // ========== REAL-TIME POSTURE MONITORING ==========
@@ -212,6 +254,8 @@ export const MonitoringView = {
             headForwardAngle: Math.round(metrics.forwardHead?.value ?? 0),
             headTiltAngle: Math.round(metrics.headTilt?.value ?? 0),
             shoulderAsymmetry: Math.round(metrics.shoulderAsymmetry?.value ?? 0),
+            faceDistancePercent: Math.round(metrics.faceDistance?.value ?? 0),
+            faceDistanceBaselineReady: Boolean(metrics.faceDistance?.baselineReady),
             verticalAlign: Math.round(metrics.verticalTilt?.value ?? 0),
             slouchingScore: Math.round(metrics.slouching?.value ?? 0),
             positionQuality: Math.max(0, 100 - Math.round(analysis.overallSeverity || 0)),
@@ -255,9 +299,9 @@ export const MonitoringView = {
         const elapsed = Math.floor((now - sessionStartTime.value) / 1000);
         sessionElapsedTime.value = formatTimeSeconds(elapsed);
 
-        // Update countdown for timed sessions
-        if (selectedMode.value === 'timed' && currentSession && currentSession.duration) {
-          const timeRemaining = currentSession.duration - elapsed;
+        // Update countdown for fixed-duration sessions
+        if (Number.isFinite(timedSessionTotalSeconds.value)) {
+          const timeRemaining = timedSessionTotalSeconds.value - elapsed;
           sessionCountdownTime.value = formatTimeSeconds(Math.max(0, timeRemaining));
 
           // Auto-end session when time is up
@@ -348,7 +392,7 @@ export const MonitoringView = {
       const reportText = `
 POSTURE ANALYSIS REPORT
 Generated: ${new Date().toLocaleString()}
-Session Mode: ${selectedMode.value === 'live' ? 'Live Monitoring' : `Timed (${selectedDuration.value} min)`}
+Session Mode: ${Number.isFinite(selectedDuration.value) ? `Timed (${selectedDuration.value} min)` : 'Unlimited'}
 Duration: ${sessionElapsedTime.value}
 
 === OVERALL ASSESSMENT ===
@@ -412,12 +456,11 @@ ${generatedReport.value.healthRiskAssessment}
     }
 
     function startNewSession() {
-      viewMode.value = 'mode-select';
-      selectedMode.value = 'live';
-      selectedDuration.value = 15;
+      viewMode.value = 'setup';
       isSessionActive.value = false;
       generatedReport.value = null;
       detectedIssues.value = [];
+      timedSessionTotalSeconds.value = Number.isFinite(selectedDuration.value) ? selectedDuration.value * 60 : null;
       currentSession = null;
     }
 
@@ -444,11 +487,16 @@ ${generatedReport.value.healthRiskAssessment}
               .slice(1)
               .map((session) => ({ report: generateDetailedReport(session) }))
               .filter((item) => item.report && item.report.status === 'SUCCESS');
-            selectedMode.value = latestSession.mode || 'live';
+            selectedDuration.value = latestSession.mode === 'timed'
+              ? Math.max(1, Math.round((latestSession.duration || 0) / 60))
+              : null;
+            timedSessionTotalSeconds.value = null;
             sessionElapsedTime.value = formatTimeSeconds(latestSession.duration || 0);
             viewMode.value = 'report-view';
           }
         }
+
+      window.setOverlayEnabled?.(showOnScreenAlerts.value);
       }
     });
 
@@ -464,8 +512,11 @@ ${generatedReport.value.healthRiskAssessment}
     return {
       // View and Mode
       viewMode,
-      selectedMode,
       selectedDuration,
+      postureHoldSeconds,
+      enabledAlerts,
+      showOnScreenAlerts,
+      sessionLabel,
       
       // Monitoring
       isSessionActive,
@@ -478,6 +529,7 @@ ${generatedReport.value.healthRiskAssessment}
       liveMetrics,
       realtimeMetricRows,
       detectedIssues,
+      activeScreenAlerts,
       
       // Report
       generatedReport,
@@ -492,7 +544,6 @@ ${generatedReport.value.healthRiskAssessment}
       
       // Actions
       startSession,
-      cancelModeSelection,
       endSession,
       downloadReport,
       startNewSession,
@@ -500,76 +551,74 @@ ${generatedReport.value.healthRiskAssessment}
     };
   },
   template: `
-    <!-- MODE SELECTION SCREEN -->
-    <div v-show="viewMode === 'mode-select'" class="w-full">
+    <!-- SESSION SETUP SCREEN -->
+    <div v-show="viewMode === 'setup'" class="w-full">
       <app-card>
         <div class="text-center mb-8">
           <h2 class="font-[Syne] text-[2rem] font-extrabold mb-3">Start a Posture Monitoring Session</h2>
-          <p class="text-[var(--muted)] text-[1rem]">Choose your monitoring mode to begin real-time posture analysis</p>
+          <p class="text-[var(--muted)] text-[1rem]">Pick session duration, hold threshold, and alert types before starting</p>
         </div>
 
-        <!-- Mode Selection -->
-        <div class="grid grid-cols-2 gap-6 mb-8">
-          <!-- Live Monitoring -->
-          <div 
-            class="p-6 border-2 rounded-xl cursor-pointer transition-all duration-200"
-            :class="selectedMode === 'live' ? 'border-[var(--accent)] bg-[var(--surface2)]' : 'border-[var(--border)] bg-[var(--surface)]'"
-            @click="selectedMode = 'live'"
-          >
-            <div class="flex items-start gap-3 mb-3">
-              <input type="radio" v-model="selectedMode" value="live" class="mt-1" />
-              <div>
-                <h3 class="font-semibold text-[1.1rem] mb-1">Live Monitoring</h3>
-                <p class="text-[var(--muted)] text-[0.9rem]">Open-ended session with no time limit</p>
-              </div>
-            </div>
-            <div class="bg-[var(--surface)] p-3 rounded-lg text-[0.85rem] text-[var(--muted)]">
-              Monitor your posture continuously until you decide to stop. Ideal for extended work sessions.
-            </div>
-          </div>
-
-          <!-- Timed Session -->
-          <div 
-            class="p-6 border-2 rounded-xl cursor-pointer transition-all duration-200"
-            :class="selectedMode === 'timed' ? 'border-[var(--accent)] bg-[var(--surface2)]' : 'border-[var(--border)] bg-[var(--surface)]'"
-            @click="selectedMode = 'timed'"
-          >
-            <div class="flex items-start gap-3 mb-3">
-              <input type="radio" v-model="selectedMode" value="timed" class="mt-1" />
-              <div>
-                <h3 class="font-semibold text-[1.1rem] mb-1">Timed Session</h3>
-                <p class="text-[var(--muted)] text-[0.9rem]">Structured session with a set duration</p>
-              </div>
-            </div>
-            <div class="bg-[var(--surface)] p-3 rounded-lg text-[0.85rem] text-[var(--muted)]">
-              Session will automatically end after your selected time. Great for focused breaks or work intervals.
-            </div>
-          </div>
-        </div>
-
-        <!-- Duration Picker (for Timed Mode) -->
-        <div v-if="selectedMode === 'timed'" class="mb-8">
+        <!-- Duration Picker -->
+        <div class="mb-8">
           <label class="block text-[0.95rem] font-semibold mb-3">Session Duration</label>
-          <div class="grid grid-cols-5 gap-2">
+          <div class="grid grid-cols-3 sm:grid-cols-6 gap-2">
             <button
-              v-for="dur in [5, 10, 15, 30, 45]"
+              v-for="dur in [5, 10, 15, 30, 45, null]"
               :key="dur"
               @click="selectedDuration = dur"
               :class="['btn-calibrate', selectedDuration === dur ? 'btn-emphasis btn-emphasis-accent' : 'bg-[var(--surface2)] text-[var(--text)]']"
               class="py-3 rounded-lg font-semibold"
             >
-              {{ dur }}m
+              {{ dur === null ? 'Unlimited' : dur + 'm' }}
             </button>
           </div>
+        </div>
+
+        <div class="mb-8 p-4 bg-[var(--surface2)] border border-[var(--border)] rounded-xl">
+          <label class="block text-[0.95rem] font-semibold mb-2">Posture Alert Hold Time: {{ postureHoldSeconds }}s</label>
+          <p class="text-[0.85rem] text-[var(--muted)] mb-3">Flag an issue only if it persists for the selected duration (3-10 seconds).</p>
+          <input
+            type="range"
+            min="3"
+            max="10"
+            step="1"
+            v-model.number="postureHoldSeconds"
+            class="w-full"
+          />
+          <div class="flex justify-between text-[0.75rem] text-[var(--muted)] mt-1">
+            <span>3s</span>
+            <span>10s</span>
+          </div>
+        </div>
+
+        <div class="mb-8 p-4 bg-[var(--surface2)] border border-[var(--border)] rounded-xl">
+          <label class="block text-[0.95rem] font-semibold mb-3">Alert Types</label>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-[0.9rem]">
+            <label class="flex items-center gap-2">
+              <input type="checkbox" v-model="enabledAlerts.screenDistance" />
+              <span>Approaching Screen Too Much</span>
+            </label>
+            <label class="flex items-center gap-2">
+              <input type="checkbox" v-model="enabledAlerts.shoulderAsymmetry" />
+              <span>Uneven Shoulders</span>
+            </label>
+            <label class="flex items-center gap-2">
+              <input type="checkbox" v-model="enabledAlerts.headTilt" />
+              <span>Head Tilt</span>
+            </label>
+          </div>
+          <label class="flex items-center gap-2 mt-4 text-[0.9rem]">
+            <input type="checkbox" v-model="showOnScreenAlerts" />
+            <span>Show on-screen overlay alerts</span>
+          </label>
+          <p class="text-[0.78rem] text-[var(--muted)] mt-2">Default is off. Enable this if you want visual alert overlays while monitoring.</p>
         </div>
 
         <!-- Action Buttons -->
         <div class="flex gap-3 justify-center">
           <button @click="startSession" class="btn-calibrate btn-emphasis btn-emphasis-accent px-8 py-3 rounded-lg font-semibold">
-            Start {{ selectedMode === 'live' ? 'Live Monitoring' : 'Timed Session' }}
-          </button>
-          <button @click="cancelModeSelection" class="btn-calibrate bg-[var(--surface2)] text-[var(--text)] px-8 py-3 rounded-lg font-semibold">
-            Cancel
+            Start Monitoring
           </button>
         </div>
 
@@ -586,7 +635,7 @@ ${generatedReport.value.healthRiskAssessment}
         <div class="flex items-center justify-between mb-6">
           <div>
             <h2 class="font-[Syne] text-[1.8rem] font-extrabold">Live Posture Monitoring</h2>
-            <p class="text-[var(--muted)] text-[0.95rem]">{{ selectedMode === 'live' ? 'Open-ended session' : \`\${selectedDuration} minute timed session\` }}</p>
+            <p class="text-[var(--muted)] text-[0.95rem]">{{ sessionLabel }}</p>
           </div>
           <div class="text-right">
             <div class="flex items-center gap-2.5 mb-2">
@@ -599,9 +648,9 @@ ${generatedReport.value.healthRiskAssessment}
         <!-- Session Timers -->
         <div class="grid grid-cols-2 gap-4 mb-6">
           <div class="bg-[var(--surface2)] p-4 rounded-xl border border-[var(--border)]">
-            <div class="text-[var(--muted)] text-[0.85rem] mb-2">{{ selectedMode === 'live' ? 'Elapsed Time' : 'Time Remaining' }}</div>
+            <div class="text-[var(--muted)] text-[0.85rem] mb-2">{{ selectedDuration === null ? 'Elapsed Time' : 'Time Remaining' }}</div>
             <div class="font-['JetBrains_Mono'] text-[1.8rem] font-semibold text-[var(--accent)]">
-              {{ selectedMode === 'live' ? sessionElapsedTime : sessionCountdownTime }}
+              {{ selectedDuration === null ? sessionElapsedTime : sessionCountdownTime }}
             </div>
           </div>
           <div class="bg-[var(--surface2)] p-4 rounded-xl border border-[var(--border)]">
@@ -621,10 +670,20 @@ ${generatedReport.value.healthRiskAssessment}
             <div class="camera-corners">
               <span></span><span></span><span></span><span></span>
             </div>
+
+            <div v-if="showOnScreenAlerts && activeScreenAlerts.length" class="absolute inset-0 z-20 bg-[rgba(239,68,68,0.18)] border border-[rgba(239,68,68,0.55)] flex items-center justify-center p-4 text-center">
+              <div class="bg-[rgba(9,9,11,0.78)] text-white px-4 py-3 rounded-lg text-[0.95rem]">
+                {{ activeScreenAlerts.join(' • ') }}
+              </div>
+            </div>
             
             <!-- Status Label -->
             <div class="absolute bottom-4 left-4 text-white text-sm bg-black bg-opacity-50 px-2 py-1 rounded">
               <span id="statusLabel">Initializing...</span>
+            </div>
+
+            <div id="alertOverlay" class="absolute inset-0 z-10 opacity-0 pointer-events-none bg-[rgba(239,68,68,0.12)] flex items-center justify-center text-white text-sm font-semibold transition-opacity duration-200">
+              Too close to the screen
             </div>
             
             <!-- Hidden elements needed by mediapipe.js but not displayed -->
@@ -635,7 +694,6 @@ ${generatedReport.value.healthRiskAssessment}
               <span id="baseStat"></span>
               <span id="stateStat"></span>
               <span id="soundLabel"></span>
-              <div id="alertOverlay"></div>
             </div>
           </div>
         </div>

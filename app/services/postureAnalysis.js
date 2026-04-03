@@ -59,6 +59,7 @@ let issueHoldTimers = {
 
 let issueStartTimes = {
   forwardHead: null,
+  screenDistance: null,
   headTilt: null,
   verticalTilt: null,
   shoulderAsymmetry: null,
@@ -66,6 +67,108 @@ let issueStartTimes = {
 };
 
 let requiredHoldDuration = getRandomHoldDuration();
+let runtimePreferences = {
+  holdDurationMs: null
+};
+
+function getConfiguredHoldDuration() {
+  if (Number.isFinite(runtimePreferences.holdDurationMs)) {
+    return runtimePreferences.holdDurationMs;
+  }
+  return getRandomHoldDuration();
+}
+
+let faceDistanceBaseline = null;
+let baselineSteadyStart = null;
+let baselineSamples = [];
+let lastFaceSize = null;
+
+function getFaceSizeFromPose(landmarks) {
+  const leftEar = landmarks[LANDMARKS.LEFT_EAR];
+  const rightEar = landmarks[LANDMARKS.RIGHT_EAR];
+
+  if (!isValidLandmark(leftEar) || !isValidLandmark(rightEar)) {
+    return null;
+  }
+
+  // Ear-to-ear distance acts as a stable proxy for face size in frame.
+  return Math.abs(rightEar.x - leftEar.x);
+}
+
+function updateFaceDistanceBaseline(faceSize) {
+  const now = Date.now();
+  const STEADY_WINDOW_MS = 5000;
+  const STEADY_VARIATION = 0.03; // 3%
+
+  if (!Number.isFinite(faceSize) || faceSize <= 0) {
+    return;
+  }
+
+  if (faceDistanceBaseline !== null) {
+    lastFaceSize = faceSize;
+    return;
+  }
+
+  if (!Number.isFinite(lastFaceSize)) {
+    lastFaceSize = faceSize;
+    baselineSteadyStart = now;
+    baselineSamples = [faceSize];
+    return;
+  }
+
+  const deltaRatio = Math.abs(faceSize - lastFaceSize) / Math.max(lastFaceSize, 0.0001);
+  if (deltaRatio <= STEADY_VARIATION) {
+    if (!baselineSteadyStart) baselineSteadyStart = now;
+    baselineSamples.push(faceSize);
+
+    if (now - baselineSteadyStart >= STEADY_WINDOW_MS && baselineSamples.length >= 20) {
+      const avg = baselineSamples.reduce((sum, val) => sum + val, 0) / baselineSamples.length;
+      faceDistanceBaseline = avg;
+    }
+  } else {
+    baselineSteadyStart = now;
+    baselineSamples = [faceSize];
+  }
+
+  lastFaceSize = faceSize;
+}
+
+function analyzeFaceDistanceFromScreen(landmarks) {
+  const faceSize = getFaceSizeFromPose(landmarks);
+  updateFaceDistanceBaseline(faceSize);
+
+  if (!Number.isFinite(faceSize) || faceSize <= 0) {
+    return {
+      detected: false,
+      severity: 0,
+      value: 0,
+      baselineReady: false,
+      isTooClose: false
+    };
+  }
+
+  if (!Number.isFinite(faceDistanceBaseline) || faceDistanceBaseline <= 0) {
+    return {
+      detected: false,
+      severity: 0,
+      value: 0,
+      baselineReady: false,
+      isTooClose: false
+    };
+  }
+
+  const closerPercent = ((faceSize - faceDistanceBaseline) / faceDistanceBaseline) * 100;
+  const isTooClose = closerPercent > 15;
+  const severity = Math.max(0, Math.min(100, (Math.max(0, closerPercent) / 35) * 100));
+
+  return {
+    detected: isTooClose,
+    severity,
+    value: closerPercent,
+    baselineReady: true,
+    isTooClose
+  };
+}
 
 function getRandomHoldDuration() {
   return CONFIG.HOLD_THRESHOLD_MIN + 
@@ -302,6 +405,7 @@ export function analyzePosture(landmarks) {
   const verticalTilt = analyzeVerticalTilt(landmarks);
   const shoulderAsymmetry = analyzeShoulderAsymmetry(landmarks);
   const slouching = analyzeSlouching(landmarks);
+  const faceDistance = analyzeFaceDistanceFromScreen(landmarks);
   
   // Track hold durations
   const forwardHeadFlagged = trackIssueDuration('forwardHead', forwardHead.detected);
@@ -309,6 +413,7 @@ export function analyzePosture(landmarks) {
   const verticalTiltFlagged = trackIssueDuration('verticalTilt', verticalTilt.detected);
   const shoulderAsymmetryFlagged = trackIssueDuration('shoulderAsymmetry', shoulderAsymmetry.detected);
   const slouchingFlagged = trackIssueDuration('slouching', slouching.detected);
+  const screenDistanceFlagged = trackIssueDuration('screenDistance', faceDistance.detected);
   
   // Compile flagged issues (only after hold duration)
   const flaggedIssues = [];
@@ -318,6 +423,14 @@ export function analyzePosture(landmarks) {
       type: 'FORWARD_HEAD',
       severity: forwardHead.severity,
       value: forwardHead.value.toFixed(2)
+    });
+  }
+
+  if (screenDistanceFlagged) {
+    flaggedIssues.push({
+      type: 'SCREEN_TOO_CLOSE',
+      severity: faceDistance.severity,
+      value: faceDistance.value.toFixed(2)
     });
   }
   
@@ -370,6 +483,7 @@ export function analyzePosture(landmarks) {
     issues: flaggedIssues,
     detailedMetrics: {
       forwardHead,
+      faceDistance,
       headTilt,
       verticalTilt,
       shoulderAsymmetry,
@@ -384,15 +498,28 @@ export function analyzePosture(landmarks) {
  * Reset all hold-duration trackers
  * Call this at the start of a new session
  */
-export function resetPostureTracking() {
+export function resetPostureTracking(options = {}) {
+  const holdSeconds = Number(options.holdDurationSeconds);
+  if (Number.isFinite(holdSeconds)) {
+    const clamped = Math.max(3, Math.min(10, holdSeconds));
+    runtimePreferences.holdDurationMs = clamped * 1000;
+  } else {
+    runtimePreferences.holdDurationMs = null;
+  }
+
   issueStartTimes = {
     forwardHead: null,
+    screenDistance: null,
     headTilt: null,
     verticalTilt: null,
     shoulderAsymmetry: null,
     slouching: null
   };
-  requiredHoldDuration = getRandomHoldDuration();
+  faceDistanceBaseline = null;
+  baselineSteadyStart = null;
+  baselineSamples = [];
+  lastFaceSize = null;
+  requiredHoldDuration = getConfiguredHoldDuration();
 }
 
 /**

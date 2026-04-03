@@ -57,7 +57,7 @@ let running = false;
 let baselineSize = null;
 let tolerancePct = 20;
 let soundOn = true;
-let overlayOn = true;
+let overlayOn = false;
 let pausedUntil = 0;
 
 // MediaPipe models
@@ -285,6 +285,13 @@ function showOverlay(show) {
     return;
   }
   alertOverlay.classList.toggle("visible", !!show);
+}
+
+function setOverlayEnabled(enabled) {
+  overlayOn = Boolean(enabled);
+  if (!overlayOn) {
+    showOverlay(false);
+  }
 }
 
 function faceBoxHeight(landmarks) {
@@ -697,6 +704,7 @@ window.attachMediaPipeListeners = attachButtonListeners;
 // Export functions so Vue components can call them
 window.startCamera = startCamera;
 window.stopCamera = stopCamera;
+window.setOverlayEnabled = setOverlayEnabled;
 
 // Export Pose landmarks data structure
 // Access via: window.postureData.landmarks (33-point pose array)
