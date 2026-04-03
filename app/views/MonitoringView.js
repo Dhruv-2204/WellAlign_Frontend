@@ -1,6 +1,9 @@
 import { checkBackendHealth } from '../services/backendHealth.js';
 import { useStatusToast } from '../utils/useStatusToast.js';
-import { useMonitoringSession, setMonitoringActive, setLastMonitoringSession } from '../services/monitoringSession.js';
+import { startRecordingSession, recordPostureSnapshot, endRecordingSession, getSessionHistoryList } from '../services/monitoringSession.js';
+import { analyzePosture, resetPostureTracking, getHoldDuration } from '../services/postureAnalysis.js';
+import { generateDetailedReport } from '../services/postureAdvice.js';
+import { PostureReport } from '../components/PostureReport.js';
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -42,29 +45,101 @@ async function ensureMediaPipeScripts() {
   return window.__monitoringScriptsPromise;
 }
 
-export const MonitoringView = {
-  setup() {
-    const { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated } = Vue;
 
+export const MonitoringView = {
+  components: {
+    PostureReport
+  },
+  setup() {
+    const { ref, computed, onMounted, onBeforeUnmount } = Vue;
+    const { useRoute } = VueRouter;
+    const route = useRoute();
+
+    // View Mode State
+    const viewMode = ref('mode-select'); // 'mode-select' | 'monitoring' | 'report-view'
+    const selectedMode = ref('live'); // 'live' | 'timed'
+    const selectedDuration = ref(15); // minutes (5, 10, 15, 30, 45)
+    
+    // Monitoring State
+    const isSessionActive = ref(false);
+    const sessionStartTime = ref(null);
+    const sessionElapsedTime = ref('00:00:00');
+    const sessionCountdownTime = ref('00:15:00');
+    const isLoading = ref(false);
     const backendStatus = ref('Preparing monitoring services...');
-    const monitoringState = useMonitoringSession();
-    const isMonitoring = ref(false);
-    const sessionDuration = ref('45:32');
-    const sessionScore = ref(82);
-    const headPositionWidth = ref(68);
-    const headPositionColor = ref('var(--warn)');
-    const headPosition = ref('Forward +12deg');
-    const headPositionGradient = ref('linear-gradient(90deg,var(--warn),#f9d06a)');
-    const shoulderWidth = ref(88);
-    const shoulderColor = ref('var(--accent)');
-    const shoulderAlignment = ref('Good');
-    const spineWidth = ref(80);
-    const spineColor = ref('var(--accent2)');
-    const spineCurvature = ref('Neutral');
-    const spineGradient = ref('linear-gradient(90deg,var(--accent2),#6af9e0)');
-    const postureSummary = ref({ good: 82, forward: 12, slouch: 6 });
-    const monitoringStatusLabel = computed(() => (monitoringState.isMonitoring ? 'ON' : 'OFF'));
-    const lastSession = computed(() => monitoringState.lastSession);
+
+    // Real-time Posture Metrics
+    const liveMetrics = ref({
+      headForwardAngle: 0,
+      headTiltAngle: 0,
+      shoulderAsymmetry: 0,
+      verticalAlign: 0,
+      slouchingScore: 0,
+      positionQuality: 0,
+      overallSeverity: 0
+    });
+
+    // Issues with hold-duration tracking
+    const detectedIssues = ref([]);
+    const issueHoldDurations = ref({}); // { issueKey: timeRemaining }
+
+    const realtimeMetricRows = computed(() => {
+      const goodPosture = Math.max(0, Math.min(100, liveMetrics.value.positionQuality || 0));
+      const headTilt = Math.max(0, Math.round(liveMetrics.value.headTiltAngle || 0));
+      const shoulderAsymmetry = Math.max(0, Math.round(liveMetrics.value.shoulderAsymmetry || 0));
+      const forwardAngle = Math.max(0, Math.round(liveMetrics.value.headForwardAngle || 0));
+
+      const headTiltQuality = Math.max(5, 100 - Math.min(100, Math.round((headTilt / 25) * 100)));
+      const shoulderQuality = Math.max(5, 100 - Math.min(100, Math.round((shoulderAsymmetry / 20) * 100)));
+      const forwardQuality = Math.max(5, 100 - Math.min(100, Math.round((forwardAngle / 20) * 100)));
+
+      return [
+        {
+          key: 'goodPosture',
+          label: 'Good Posture',
+          valueText: `${goodPosture}%`,
+          width: goodPosture,
+          color: 'var(--accent)',
+          gradient: 'linear-gradient(90deg,var(--accent2),var(--accent))'
+        },
+        {
+          key: 'headTilt',
+          label: 'Head Tilt',
+          valueText: `${headTilt}deg`,
+          width: headTiltQuality,
+          color: headTilt <= 12 ? 'var(--accent)' : 'var(--warn)',
+          gradient: headTilt <= 12
+            ? 'linear-gradient(90deg,var(--accent),#34d399)'
+            : 'linear-gradient(90deg,var(--warn),#fbbf24)'
+        },
+        {
+          key: 'shoulderAsymmetry',
+          label: 'Shoulder Asymmetry',
+          valueText: `${shoulderAsymmetry}%`,
+          width: shoulderQuality,
+          color: shoulderAsymmetry <= 8 ? 'var(--accent)' : 'var(--warn)',
+          gradient: shoulderAsymmetry <= 8
+            ? 'linear-gradient(90deg,var(--accent2),var(--accent))'
+            : 'linear-gradient(90deg,var(--warn),#f59e0b)'
+        },
+        {
+          key: 'forwardAngle',
+          label: 'Forward Angle',
+          valueText: `${forwardAngle}deg`,
+          width: forwardQuality,
+          color: forwardAngle <= 8 ? 'var(--accent2)' : 'var(--warn)',
+          gradient: forwardAngle <= 8
+            ? 'linear-gradient(90deg,var(--accent2),#5eead4)'
+            : 'linear-gradient(90deg,var(--warn),#fbbf24)'
+        }
+      ];
+    });
+
+    // Post-Session Report
+    const generatedReport = ref(null);
+    const previousSessionReports = ref([]);
+    
+    // Status and Toast
     const {
       showToast,
       toastTitle,
@@ -74,97 +149,283 @@ export const MonitoringView = {
       hideStatusToast
     } = useStatusToast(5000);
 
-    let metricsInterval = null;
-    let sessionInterval = null;
-    let elapsed = 2700;
+    // Current Session Object
+    let currentSession = null;
+    let recordingIntervalId = null;
+    let timerIntervalId = null;
 
-    // Define metrics listener at setup level so it can be cleaned up in onBeforeUnmount
-    const metricsListener = (event) => {
-      const metrics = event.detail;
-      headPositionWidth.value = metrics.headPositionWidth;
-      headPositionColor.value = metrics.headPositionColor;
-      headPosition.value = metrics.headPosition;
-      headPositionGradient.value = metrics.headPositionGradient;
-      shoulderWidth.value = metrics.shoulderWidth;
-      shoulderColor.value = metrics.shoulderColor;
-      shoulderAlignment.value = metrics.shoulderAlignment;
-      spineWidth.value = metrics.spineWidth;
-      spineColor.value = metrics.spineColor;
-      spineCurvature.value = metrics.spineCurvature;
-      spineGradient.value = metrics.spineGradient;
-    };
+    // ========== SESSION MODE SELECTION ==========
+    function startSession() {
+      resetPostureTracking();
 
-    function syncMonitoringState(active) {
-      isMonitoring.value = active;
-      setMonitoringActive(active);
+      // Reset tracking
+      sessionStartTime.value = Date.now();
+      sessionElapsedTime.value = '00:00:00';
+      sessionCountdownTime.value = formatTimeRemaining(selectedMode.value === 'timed' ? selectedDuration.value * 60 : null);
+      detectedIssues.value = [];
+      issueHoldDurations.value = {};
+      isSessionActive.value = true;
+      viewMode.value = 'monitoring';
+
+      // Setup posture recording FIRST (set callback before camera starts)
+      startPostureRecording();
+
+      // Start recording session (creates internal session object)
+      const durationSeconds = selectedMode.value === 'timed' ? selectedDuration.value * 60 : null;
+      currentSession = startRecordingSession(selectedMode.value, durationSeconds);
+
+      // Start timers
+      startTimers();
+
+      // NOW start camera (callback already ready)
+      window.startCamera?.();
+      showStatusToast('Session Started', 'Live posture monitoring is active.', 'var(--accent)');
     }
 
-    function recordLastSession() {
-      setLastMonitoringSession({
-        duration: sessionDuration.value,
-        score: sessionScore.value,
-        endedAt: new Date().toISOString(),
-        summary: postureSummary.value
-      });
+    function cancelModeSelection() {
+      selectedMode.value = 'live';
+      selectedDuration.value = 15;
     }
 
-    function formatSessionEndedAt(value) {
-      if (!value) return 'N/A';
-      const dt = new Date(value);
-      if (Number.isNaN(dt.getTime())) return 'N/A';
-      return dt.toLocaleString();
+    // ========== REAL-TIME POSTURE MONITORING ==========
+    function startPostureRecording() {
+      // Listen to MediaPipe pose updates
+      window.onPostureUpdate = (poseLandmarks) => {
+        console.log('[MonitoringView.onPostureUpdate] Called with', poseLandmarks ? poseLandmarks.length + ' landmarks' : 'no landmarks');
+        if (!isSessionActive.value) {
+          console.warn('[MonitoringView.onPostureUpdate] Session not active, skipping');
+          return;
+        }
+
+        try {
+          // Analyze posture from landmarks
+          const analysis = analyzePosture(poseLandmarks);
+          console.log('[MonitoringView.onPostureUpdate] Analysis result:', {
+            classification: analysis.overallSeverity,
+            issues: analysis.issues ? analysis.issues.length : 0,
+            hasMetrics: !!analysis.detailedMetrics
+          });
+          
+          // Update live metrics
+          const metrics = analysis.detailedMetrics || {};
+          liveMetrics.value = {
+            headForwardAngle: Math.round(metrics.forwardHead?.value ?? 0),
+            headTiltAngle: Math.round(metrics.headTilt?.value ?? 0),
+            shoulderAsymmetry: Math.round(metrics.shoulderAsymmetry?.value ?? 0),
+            verticalAlign: Math.round(metrics.verticalTilt?.value ?? 0),
+            slouchingScore: Math.round(metrics.slouching?.value ?? 0),
+            positionQuality: Math.max(0, 100 - Math.round(analysis.overallSeverity || 0)),
+            overallSeverity: Math.round(analysis.overallSeverity || 0)
+          };
+
+          // Update detected issues with hold-duration info
+          detectedIssues.value = analysis.issues.map(issue => {
+            const holdDuration = getHoldDuration();
+            return {
+              ...issue,
+              key: issue.type,
+              title: issue.type.replace(/_/g, ' ').toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase()),
+              description: 'Sustained posture deviation detected',
+              holdDuration: holdDuration,
+              isFlagged: true
+            };
+          });
+
+          // Record snapshot to current session (monitoringSession.js manages internal state)
+          console.log('[MonitoringView.onPostureUpdate] Calling recordPostureSnapshot');
+          recordPostureSnapshot(analysis);
+          console.log('[MonitoringView.onPostureUpdate] recordPostureSnapshot returned successfully');
+
+        } catch (error) {
+          console.error('Error analyzing posture:', error);
+        }
+      };
     }
 
-    function startLocalIntervals() {
-      if (!metricsInterval) {
-        metricsInterval = setInterval(() => {
-          if (!isMonitoring.value) return;
-          const idx = Math.floor(Math.random() * 5);
-          const head = [65, 70, 75, 68, 72];
-          const shoulder = [85, 88, 90, 85, 88];
-          const spine = [78, 82, 80, 85, 79];
-          headPositionWidth.value = head[idx];
-          shoulderWidth.value = shoulder[idx];
-          spineWidth.value = spine[idx];
-        }, 2000);
+    function stopPostureRecording() {
+      window.onPostureUpdate = null;
+    }
+
+    // ========== TIMER MANAGEMENT ==========
+    function startTimers() {
+      timerIntervalId = setInterval(() => {
+        if (!isSessionActive.value) return;
+
+        const now = Date.now();
+        const elapsed = Math.floor((now - sessionStartTime.value) / 1000);
+        sessionElapsedTime.value = formatTimeSeconds(elapsed);
+
+        // Update countdown for timed sessions
+        if (selectedMode.value === 'timed' && currentSession && currentSession.duration) {
+          const timeRemaining = currentSession.duration - elapsed;
+          sessionCountdownTime.value = formatTimeSeconds(Math.max(0, timeRemaining));
+
+          // Auto-end session when time is up
+          if (timeRemaining <= 0) {
+            endSession();
+          }
+        }
+      }, 100);
+    }
+
+    function formatTimeSeconds(seconds) {
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const secs = seconds % 60;
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+
+    function formatTimeRemaining(seconds) {
+      if (!seconds) return '--:--:--';
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const secs = seconds % 60;
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+
+    // ========== SESSION ENDING & REPORTING ==========
+    async function endSession() {
+      if (!isSessionActive.value) return;
+
+      isSessionActive.value = false;
+      stopPostureRecording();
+
+      if (timerIntervalId) {
+        clearInterval(timerIntervalId);
+        timerIntervalId = null;
       }
 
-      if (!sessionInterval) {
-        sessionInterval = setInterval(() => {
-          if (!isMonitoring.value) return;
-          elapsed += 1;
-          const h = String(Math.floor(elapsed / 3600)).padStart(2, '0');
-          const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, '0');
-          const s = String(elapsed % 60).padStart(2, '0');
-          sessionDuration.value = `${h}:${m}:${s}`;
-        }, 1000);
-      }
+      // Stop camera
+      window.stopCamera?.();
+
+      // Show loading state
+      isLoading.value = true;
+      viewMode.value = 'report-view';
+      showStatusToast('Analyzing Posture', 'Generating your personalized report...', 'var(--accent)');
+
+      // Finalize session in service
+      const finalSession = await endRecordingSession();
+
+      // Generate report
+      setTimeout(() => {
+        try {
+          if (!finalSession) {
+            throw new Error('Session finalization failed - no session returned');
+          }
+          
+          if (!finalSession.snapshots || finalSession.snapshots.length === 0) {
+            console.warn('Warning: No snapshots recorded during session. Session may have been too short or no pose detected.');
+          }
+          
+          const report = generateDetailedReport(finalSession);
+          
+          if (!report || report.error) {
+            throw new Error(report?.error || 'Report generation failed - unknown error');
+          }
+          
+          generatedReport.value = report;
+          const history = getSessionHistoryList();
+          previousSessionReports.value = history
+            .slice(1)
+            .map((session) => ({ report: generateDetailedReport(session) }))
+            .filter((item) => item.report && item.report.status === 'SUCCESS');
+          
+          isLoading.value = false;
+          hideStatusToast();
+          showStatusToast('Report Ready', 'Your posture analysis is complete.', 'var(--accent)');
+        } catch (error) {
+          console.error('Error generating report:', error);
+          console.error('Session data:', finalSession);
+          isLoading.value = false;
+          showStatusToast('Report Error', error.message || 'Failed to generate report. Try again.', 'var(--danger)');
+        }
+      }, 1500);
     }
 
-    function stopLocalIntervals() {
-      if (metricsInterval) {
-        clearInterval(metricsInterval);
-        metricsInterval = null;
-      }
-      if (sessionInterval) {
-        clearInterval(sessionInterval);
-        sessionInterval = null;
-      }
+    function downloadReport() {
+      if (!generatedReport.value) return;
+
+      const reportText = `
+POSTURE ANALYSIS REPORT
+Generated: ${new Date().toLocaleString()}
+Session Mode: ${selectedMode.value === 'live' ? 'Live Monitoring' : `Timed (${selectedDuration.value} min)`}
+Duration: ${sessionElapsedTime.value}
+
+=== OVERALL ASSESSMENT ===
+Overall Score: ${generatedReport.value.overallScore}/100
+Posture Quality: ${generatedReport.value.postureTimeDistribution.GOOD}% Good
+
+Time Distribution:
+- Good Posture: ${generatedReport.value.postureTimeDistribution.GOOD}%
+- Warning: ${generatedReport.value.postureTimeDistribution.WARNING}%
+- Poor: ${generatedReport.value.postureTimeDistribution.POOR}%
+- Critical: ${generatedReport.value.postureTimeDistribution.CRITICAL}%
+
+=== DETECTED ISSUES ===
+${generatedReport.value.detailedIssues.map(issue => `
+${issue.title} (Severity: ${issue.severity})
+${issue.description}
+Health Impact: ${issue.healthRisk}
+
+Immediate Actions:
+${issue.immediateActions.map(a => `- ${a}`).join('\n')}
+
+Daily Exercises:
+${issue.dailyExercises.map(e => `- ${e.name} (${e.frequency})`).join('\n')}
+
+Workstation Setup:
+${issue.workstationSetup.map(s => `- ${s}`).join('\n')}
+`).join('\n')}
+
+=== PERSONALIZED ADVICE ===
+${generatedReport.value.detailedIssues.map(issue => 
+  issue.personalizedAdvice.map(a => `- ${a}`).join('\n')
+).join('\n')}
+
+=== ACTION PLAN ===
+Priority Issues: ${generatedReport.value.actionPlan.priority.map(p => p.issue).join(', ')}
+
+Immediate Actions:
+${generatedReport.value.actionPlan.immediate.map(a => `- ${a}`).join('\n')}
+
+Short-term (Week): 
+${generatedReport.value.actionPlan.shortTerm.map(a => `- ${a}`).join('\n')}
+
+Long-term (Month):
+${generatedReport.value.actionPlan.longTerm.map(a => `- ${a}`).join('\n')}
+
+Health Risk Assessment:
+${generatedReport.value.healthRiskAssessment}
+`;
+
+      const blob = new Blob([reportText], { type: 'text/plain' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `posture-report-${new Date().toISOString().split('T')[0]}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+
+      showStatusToast('Downloaded', 'Report saved to your device.', 'var(--accent)');
     }
 
-    function toggleSession() {
-      const starting = !isMonitoring.value;
-      syncMonitoringState(starting);
-      if (starting) {
-        window.startCamera?.();
-        showStatusToast('Session Started', 'Live monitoring is now active. Keep good posture!', 'var(--accent)');
-      } else {
-        window.stopCamera?.();
-        recordLastSession();
-        showStatusToast('Session Ended', 'Monitoring session ended. View your report on Progress.', 'var(--muted)');
-      }
+    function startNewSession() {
+      viewMode.value = 'mode-select';
+      selectedMode.value = 'live';
+      selectedDuration.value = 15;
+      isSessionActive.value = false;
+      generatedReport.value = null;
+      detectedIssues.value = [];
+      currentSession = null;
     }
 
+    function goToDashboard() {
+      window.location.hash = '#/';
+    }
+
+    // ========== LIFECYCLE ==========
     onMounted(async () => {
       await ensureMediaPipeScripts();
       backendStatus.value = await checkBackendHealth({
@@ -172,270 +433,269 @@ export const MonitoringView = {
         unavailableMessage: 'Monitoring view loaded (backend unavailable)'
       });
 
-      isMonitoring.value = monitoringState.isMonitoring;
-      window.__notifyCameraStopped = () => {
-        syncMonitoringState(false);
-      };
-
-      // Listen for realtime metrics updates from mediapipe.js
-      window.addEventListener('metricsUpdated', metricsListener);
-
-      const startBtnEl = document.getElementById('startBtn');
-      const stopBtnEl = document.getElementById('stopBtn');
-      startBtnEl?.addEventListener('click', async () => {
-        syncMonitoringState(true);
-        await window.startCamera?.();
-        showStatusToast('Camera Started', 'Live monitoring is now active.', 'var(--accent)');
-      });
-      stopBtnEl?.addEventListener('click', async () => {
-        await window.stopCamera?.();
-        syncMonitoringState(false);
-        recordLastSession();
-        showStatusToast('Camera Stopped', 'Monitoring session ended.', 'var(--muted)');
-      });
-
-      startLocalIntervals();
-    });
-
-    onActivated(() => {
-      startLocalIntervals();
-    });
-
-    onDeactivated(() => {
-      stopLocalIntervals();
-      if (isMonitoring.value) {
-        recordLastSession();
+      if (route.query?.report === 'last') {
+        const history = getSessionHistoryList();
+        if (history.length > 0) {
+          const latestSession = history[0];
+          const report = generateDetailedReport(latestSession);
+          if (report && report.status === 'SUCCESS') {
+            generatedReport.value = report;
+            previousSessionReports.value = history
+              .slice(1)
+              .map((session) => ({ report: generateDetailedReport(session) }))
+              .filter((item) => item.report && item.report.status === 'SUCCESS');
+            selectedMode.value = latestSession.mode || 'live';
+            sessionElapsedTime.value = formatTimeSeconds(latestSession.duration || 0);
+            viewMode.value = 'report-view';
+          }
+        }
       }
-      window.stopCamera?.();
-      syncMonitoringState(false);
     });
 
     onBeforeUnmount(() => {
-      stopLocalIntervals();
-      if (isMonitoring.value) {
-        recordLastSession();
+      if (isSessionActive.value) {
+        endSession();
       }
+      if (timerIntervalId) clearInterval(timerIntervalId);
+      stopPostureRecording();
       window.stopCamera?.();
-      syncMonitoringState(false);
-      if (window.__notifyCameraStopped) {
-        window.__notifyCameraStopped = null;
-      }
-      // Clean up metrics listener
-      window.removeEventListener('metricsUpdated', metricsListener);
     });
 
     return {
-      isMonitoring,
+      // View and Mode
+      viewMode,
+      selectedMode,
+      selectedDuration,
+      
+      // Monitoring
+      isSessionActive,
+      sessionElapsedTime,
+      sessionCountdownTime,
+      isLoading,
       backendStatus,
-      sessionDuration,
-      sessionScore,
-      headPositionWidth,
-      headPositionColor,
-      headPosition,
-      headPositionGradient,
-      shoulderWidth,
-      shoulderColor,
-      shoulderAlignment,
-      spineWidth,
-      spineColor,
-      spineCurvature,
-      spineGradient,
-      postureSummary,
-      monitoringStatusLabel,
-      lastSession,
+      
+      // Metrics
+      liveMetrics,
+      realtimeMetricRows,
+      detectedIssues,
+      
+      // Report
+      generatedReport,
+      previousSessionReports,
+      
+      // Toast
       showToast,
       toastTitle,
       toastMessage,
       toastColor,
-      toggleSession,
-      formatSessionEndedAt,
-      hideStatusToast
+      hideStatusToast,
+      
+      // Actions
+      startSession,
+      cancelModeSelection,
+      endSession,
+      downloadReport,
+      startNewSession,
+      goToDashboard
     };
   },
   template: `
-    <div class="w-full delay-[50ms]">
+    <!-- MODE SELECTION SCREEN -->
+    <div v-show="viewMode === 'mode-select'" class="w-full">
       <app-card>
-        <div class="flex items-center justify-between">
-          <div>
-            <h2 class="font-[Syne] text-[1.8rem] font-extrabold mb-2">Live Monitoring Session</h2>
-            <p class="text-[var(--muted)] text-[0.95rem]">Real-time posture detection with MediaPipe</p>
-            <p class="text-[0.75rem] mt-2">Current Status: <span class="font-semibold" :class="monitoringStatusLabel === 'ON' ? 'text-[var(--accent)]' : 'text-[var(--muted)]'">{{ monitoringStatusLabel }}</span></p>
-            <p class="text-[0.75rem] text-[var(--muted)] mt-2">{{ backendStatus }}</p>
+        <div class="text-center mb-8">
+          <h2 class="font-[Syne] text-[2rem] font-extrabold mb-3">Start a Posture Monitoring Session</h2>
+          <p class="text-[var(--muted)] text-[1rem]">Choose your monitoring mode to begin real-time posture analysis</p>
+        </div>
+
+        <!-- Mode Selection -->
+        <div class="grid grid-cols-2 gap-6 mb-8">
+          <!-- Live Monitoring -->
+          <div 
+            class="p-6 border-2 rounded-xl cursor-pointer transition-all duration-200"
+            :class="selectedMode === 'live' ? 'border-[var(--accent)] bg-[var(--surface2)]' : 'border-[var(--border)] bg-[var(--surface)]'"
+            @click="selectedMode = 'live'"
+          >
+            <div class="flex items-start gap-3 mb-3">
+              <input type="radio" v-model="selectedMode" value="live" class="mt-1" />
+              <div>
+                <h3 class="font-semibold text-[1.1rem] mb-1">Live Monitoring</h3>
+                <p class="text-[var(--muted)] text-[0.9rem]">Open-ended session with no time limit</p>
+              </div>
+            </div>
+            <div class="bg-[var(--surface)] p-3 rounded-lg text-[0.85rem] text-[var(--muted)]">
+              Monitor your posture continuously until you decide to stop. Ideal for extended work sessions.
+            </div>
           </div>
-          <button @click="toggleSession" :class="['btn-calibrate', 'btn-emphasis', isMonitoring ? 'btn-emphasis-danger' : 'btn-emphasis-accent']" class="px-6 py-3 w-auto mt-0">
-            {{ isMonitoring ? 'Stop Session' : 'Start Session' }}
+
+          <!-- Timed Session -->
+          <div 
+            class="p-6 border-2 rounded-xl cursor-pointer transition-all duration-200"
+            :class="selectedMode === 'timed' ? 'border-[var(--accent)] bg-[var(--surface2)]' : 'border-[var(--border)] bg-[var(--surface)]'"
+            @click="selectedMode = 'timed'"
+          >
+            <div class="flex items-start gap-3 mb-3">
+              <input type="radio" v-model="selectedMode" value="timed" class="mt-1" />
+              <div>
+                <h3 class="font-semibold text-[1.1rem] mb-1">Timed Session</h3>
+                <p class="text-[var(--muted)] text-[0.9rem]">Structured session with a set duration</p>
+              </div>
+            </div>
+            <div class="bg-[var(--surface)] p-3 rounded-lg text-[0.85rem] text-[var(--muted)]">
+              Session will automatically end after your selected time. Great for focused breaks or work intervals.
+            </div>
+          </div>
+        </div>
+
+        <!-- Duration Picker (for Timed Mode) -->
+        <div v-if="selectedMode === 'timed'" class="mb-8">
+          <label class="block text-[0.95rem] font-semibold mb-3">Session Duration</label>
+          <div class="grid grid-cols-5 gap-2">
+            <button
+              v-for="dur in [5, 10, 15, 30, 45]"
+              :key="dur"
+              @click="selectedDuration = dur"
+              :class="['btn-calibrate', selectedDuration === dur ? 'btn-emphasis btn-emphasis-accent' : 'bg-[var(--surface2)] text-[var(--text)]']"
+              class="py-3 rounded-lg font-semibold"
+            >
+              {{ dur }}m
+            </button>
+          </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex gap-3 justify-center">
+          <button @click="startSession" class="btn-calibrate btn-emphasis btn-emphasis-accent px-8 py-3 rounded-lg font-semibold">
+            Start {{ selectedMode === 'live' ? 'Live Monitoring' : 'Timed Session' }}
           </button>
+          <button @click="cancelModeSelection" class="btn-calibrate bg-[var(--surface2)] text-[var(--text)] px-8 py-3 rounded-lg font-semibold">
+            Cancel
+          </button>
+        </div>
+
+        <!-- Info Box -->
+        <div class="mt-8 p-4 bg-[var(--surface2)] border border-[var(--border)] rounded-xl text-[0.9rem] text-[var(--muted)]">
+          <strong>📷 Camera Permission Required:</strong> Make sure your camera is enabled in browser settings. WellAlign uses your camera only to analyze your posture—no video is recorded.
         </div>
       </app-card>
     </div>
 
-    <div class="monitoring-grid">
-      <div class="flex flex-col gap-5">
-        <div class="card delay-[100ms]">
-          <div class="section-header">
-            <div class="flex items-center gap-2.5">
-              <div class="section-title">Camera Feed</div>
-              <div v-if="isMonitoring" class="flex items-center gap-1 text-[0.7rem] text-[var(--muted)]">
-                <div class="pulse-dot"></div>
-                Live
-              </div>
+    <!-- MONITORING ACTIVE SCREEN -->
+    <div v-show="viewMode === 'monitoring'" class="w-full">
+      <app-card>
+        <div class="flex items-center justify-between mb-6">
+          <div>
+            <h2 class="font-[Syne] text-[1.8rem] font-extrabold">Live Posture Monitoring</h2>
+            <p class="text-[var(--muted)] text-[0.95rem]">{{ selectedMode === 'live' ? 'Open-ended session' : \`\${selectedDuration} minute timed session\` }}</p>
+          </div>
+          <div class="text-right">
+            <div class="flex items-center gap-2.5 mb-2">
+              <div class="pulse-dot"></div>
+              <span class="text-[var(--accent)] font-semibold">Live</span>
             </div>
           </div>
+        </div>
 
-          <div class="camera-feed relative overflow-hidden rounded-[0.9rem] bg-[var(--surface2)]">
-            <div class="camera-corners"><span></span><span></span><span></span><span></span></div>
+        <!-- Session Timers -->
+        <div class="grid grid-cols-2 gap-4 mb-6">
+          <div class="bg-[var(--surface2)] p-4 rounded-xl border border-[var(--border)]">
+            <div class="text-[var(--muted)] text-[0.85rem] mb-2">{{ selectedMode === 'live' ? 'Elapsed Time' : 'Time Remaining' }}</div>
+            <div class="font-['JetBrains_Mono'] text-[1.8rem] font-semibold text-[var(--accent)]">
+              {{ selectedMode === 'live' ? sessionElapsedTime : sessionCountdownTime }}
+            </div>
+          </div>
+          <div class="bg-[var(--surface2)] p-4 rounded-xl border border-[var(--border)]">
+            <div class="text-[var(--muted)] text-[0.85rem] mb-2">Overall Severity Score</div>
+            <div class="font-['JetBrains_Mono'] text-[1.8rem] font-semibold" :class="liveMetrics.overallSeverity <= 33 ? 'text-[var(--accent)]' : liveMetrics.overallSeverity <= 66 ? 'text-[var(--warn)]' : 'text-[var(--danger)]'">
+              {{ liveMetrics.overallSeverity }}%
+            </div>
+          </div>
+        </div>
+
+        <!-- Camera Feed (Critical Element) -->
+        <div class="mb-6 p-4 bg-[var(--surface2)] rounded-xl border border-[var(--border)] overflow-hidden">
+          <div class="camera-feed">
+            <video id="video" playsinline></video>
+            <canvas id="canvas"></canvas>
             <div class="scanline"></div>
-
-            <video id="video" playsinline class="object-contain"></video>
-            <canvas id="canvas" class="pointer-events-none"></canvas>
-
-            <div id="alertOverlay" class="overlay absolute inset-0 flex items-center justify-center bg-[rgba(239,68,68,0.12)] backdrop-blur-sm rounded-[0.9rem] opacity-0 transition-opacity duration-200 pointer-events-none">
-              <div class="card bg-[var(--surface)] border border-[var(--border)] p-4 rounded-xl min-w-[16rem] text-center">
-                <div class="row flex items-center justify-center gap-2 mb-2">
-                  <div class="status-dot dot-bad w-[10px] h-[10px] rounded-full bg-[var(--danger)]"></div>
-                  <strong>You are too close to the screen</strong>
-                </div>
-                <p class="help text-[var(--muted)] text-[0.85rem]">Lean back to your baseline distance. You can also acknowledge to silence briefly.</p>
-                <div class="row flex justify-center gap-2 mt-1.5">
-                  <button id="ackBtn" class="btn-calibrate btn-emphasis btn-emphasis-accent">OK</button>
-                  <button id="pauseBtn" class="btn-calibrate bg-[var(--surface2)] text-[var(--text)]">Pause 5 min</button>
-                </div>
-              </div>
+            <div class="camera-corners">
+              <span></span><span></span><span></span><span></span>
             </div>
-          </div>
-
-          <div class="flex flex-wrap gap-2 mt-3 text-[0.85rem]">
-            <span class="badge badge-muted flex items-center gap-1">Status: <span id="statusLabel">Initializing...</span></span>
-            <span class="badge badge-muted flex items-center gap-1">Baseline: <span id="baselineLabel">not set</span></span>
-            <span class="badge badge-muted flex items-center gap-1">Tolerance: <span id="tolLabel">20%</span></span>
-            <span class="badge badge-muted flex items-center gap-1">Sound: <span id="soundLabel">On</span></span>
+            
+            <!-- Status Label -->
+            <div class="absolute bottom-4 left-4 text-white text-sm bg-black bg-opacity-50 px-2 py-1 rounded">
+              <span id="statusLabel">Initializing...</span>
+            </div>
+            
+            <!-- Hidden elements needed by mediapipe.js but not displayed -->
+            <div style="display: none;">
+              <span id="baselineLabel"></span>
+              <span id="tolLabel"></span>
+              <span id="sizeStat"></span>
+              <span id="baseStat"></span>
+              <span id="stateStat"></span>
+              <span id="soundLabel"></span>
+              <div id="alertOverlay"></div>
+            </div>
           </div>
         </div>
-
-        <div class="card delay-[150ms]">
-          <div class="section-header">
-            <div class="section-title">Real-time Metrics</div>
-          </div>
-
-          <div class="flex flex-col gap-3">
-            <div>
-              <div class="flex justify-between text-[0.8rem] mb-2">
-                <span class="text-[var(--muted)]">Head Position</span>
-                <span :style="{ color: headPositionColor }">{{ headPosition }}</span>
+        <div class="mb-6 p-5 bg-[var(--surface)] rounded-xl border border-[var(--border)]">
+          <h3 class="font-[Syne] text-[1.3rem] font-bold mb-4">Real-time Metrics</h3>
+          <div class="flex flex-col gap-4">
+            <div v-for="row in realtimeMetricRows" :key="row.key" class="flex flex-col gap-1.5">
+              <div class="flex items-center justify-between text-[0.95rem]">
+                <span class="text-[var(--text)]">{{ row.label }}</span>
+                <span class="font-semibold" :style="{ color: row.color }">{{ row.valueText }}</span>
               </div>
-              <div class="posture-bar">
-                <div class="posture-bar-fill" :style="{ width: headPositionWidth + '%', background: headPositionGradient }"></div>
-              </div>
-            </div>
-
-            <div>
-              <div class="flex justify-between text-[0.8rem] mb-2">
-                <span class="text-[var(--muted)]">Shoulder Alignment</span>
-                <span :style="{ color: shoulderColor }">{{ shoulderAlignment }}</span>
-              </div>
-              <div class="posture-bar">
-                <div class="posture-bar-fill" :style="{ width: shoulderWidth + '%' }"></div>
-              </div>
-            </div>
-
-            <div>
-              <div class="flex justify-between text-[0.8rem] mb-2">
-                <span class="text-[var(--muted)]">Spine Curvature</span>
-                <span :style="{ color: spineColor }">{{ spineCurvature }}</span>
-              </div>
-              <div class="posture-bar">
-                <div class="posture-bar-fill" :style="{ width: spineWidth + '%', background: spineGradient }"></div>
+              <div class="h-[0.38rem] bg-[var(--surface2)] rounded-full overflow-hidden">
+                <div class="h-full rounded-full transition-all duration-300" :style="{ width: row.width + '%', background: row.gradient }"></div>
               </div>
             </div>
           </div>
         </div>
 
-        <div class="card delay-[200ms]">
-          <div class="section-header">
-            <div class="section-title">Session Statistics</div>
-          </div>
+        <!-- Stop Button -->
+        <button @click="endSession" class="btn-calibrate btn-emphasis btn-emphasis-danger w-full py-3 rounded-lg font-semibold">
+          End Session
+        </button>
+      </app-card>
+    </div>
 
-          <div class="grid grid-cols-2 gap-4 mb-4">
-            <div class="bg-[var(--surface2)] p-4 rounded-xl border border-[var(--border)]">
-              <div class="card-label">Duration</div>
-              <div class="card-value text-[1.6rem]">{{ sessionDuration }}</div>
-            </div>
-            <div class="bg-[var(--surface2)] p-4 rounded-xl border border-[var(--border)]">
-              <div class="card-label">Current Score</div>
-              <div class="card-value text-[1.6rem] text-[var(--accent)]">{{ sessionScore }}%</div>
-            </div>
-          </div>
-
-          <div class="flex flex-col gap-2 text-[0.85rem]">
-            <div class="flex justify-between p-2 bg-[var(--surface2)] rounded-md">
-              <span class="text-[var(--muted)]">Good Posture</span>
-              <span class="text-[var(--accent)] font-semibold">{{ postureSummary.good }}%</span>
-            </div>
-            <div class="flex justify-between p-2 bg-[var(--surface2)] rounded-md">
-              <span class="text-[var(--muted)]">Forward Head</span>
-              <span class="text-[var(--warn)] font-semibold">{{ postureSummary.forward }}%</span>
-            </div>
-            <div class="flex justify-between p-2 bg-[var(--surface2)] rounded-md">
-              <span class="text-[var(--muted)]">Slouching</span>
-              <span class="text-[var(--danger)] font-semibold">{{ postureSummary.slouch }}%</span>
-            </div>
-          </div>
-
-          <div class="mt-4 bg-[var(--surface2)] p-4 rounded-xl border border-[var(--border)]">
-            <div class="section-title mb-3">Last Session Stats</div>
-            <div v-if="lastSession" class="flex flex-col gap-2 text-[0.85rem]">
-              <div class="flex justify-between"><span class="text-[var(--muted)]">Ended</span><span>{{ formatSessionEndedAt(lastSession.endedAt) }}</span></div>
-              <div class="flex justify-between"><span class="text-[var(--muted)]">Duration</span><span>{{ lastSession.duration }}</span></div>
-              <div class="flex justify-between"><span class="text-[var(--muted)]">Score</span><span class="text-[var(--accent)] font-semibold">{{ lastSession.score }}%</span></div>
-            </div>
-            <p v-else class="text-[0.85rem] text-[var(--muted)]">No previous monitoring session recorded yet.</p>
-          </div>
+    <!-- REPORT VIEW SCREEN -->
+    <div v-show="viewMode === 'report-view'" class="w-full">
+      <!-- Loading State -->
+      <div v-if="isLoading" class="flex flex-col items-center justify-center min-h-[60vh]">
+        <div class="animate-spin mb-4">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="w-12 h-12 text-[var(--accent)]">
+            <circle cx="12" cy="12" r="10" stroke-opacity="0.3"/>
+            <path d="M12 2a10 10 0 0110 10" stroke-linecap="round"/>
+          </svg>
         </div>
+        <h3 class="font-semibold text-[1.2rem] mb-2">Analyzing Your Posture...</h3>
+        <p class="text-[var(--muted)]">Generating your personalized report with recommendations</p>
       </div>
 
-      <div class="right-col">
-        <div class="card delay-[100ms]">
-          <div class="section-header">
-            <div class="section-title">Controls</div>
+      <!-- Report Display -->
+      <div v-else-if="generatedReport" class="w-full">
+        <app-card>
+          <div class="text-center mb-8">
+            <h2 class="font-[Syne] text-[2rem] font-extrabold mb-2">Your Posture Report</h2>
+            <p class="text-[var(--muted)]">Session completed — {{ sessionElapsedTime }} of monitoring</p>
           </div>
 
-          <div class="flex flex-col gap-3">
-            <div class="flex gap-2 flex-wrap justify-end">
-              <button id="startBtn" class="btn-calibrate btn-emphasis btn-emphasis-accent">Start Camera</button>
-              <button id="stopBtn" class="btn-calibrate btn-emphasis btn-emphasis-danger">Stop</button>
-            </div>
-            <div class="flex gap-2 flex-wrap justify-end">
-              <button id="baselineBtn" class="btn-calibrate btn-emphasis btn-emphasis-teal">Set Baseline</button>
-              <button id="resetBtn" class="btn-calibrate bg-[var(--surface2)] text-[var(--text)]">Reset Baseline</button>
-            </div>
-            <div class="flex items-center gap-3 flex-wrap">
-              <label for="tol" class="help text-[var(--muted)] text-[0.85rem] min-w-[10rem]">Tolerance (%)</label>
-              <input id="tol" type="range" min="5" max="50" value="20" class="flex-1 min-w-[10rem]" />
-            </div>
-            <div class="flex gap-2 flex-wrap justify-end">
-              <button id="soundBtn" class="btn-calibrate bg-[var(--surface2)] text-[var(--text)]">Toggle Sound</button>
-              <button id="overlayBtn" class="btn-calibrate bg-[var(--surface2)] text-[var(--text)]">On-Screen Alerts</button>
-              <button id="notifyBtn" class="btn-calibrate bg-[var(--surface2)] text-[var(--text)]">Notifications</button>
-            </div>
-            <div class="flex flex-col gap-2 text-[0.9rem]">
-              <div class="bg-[var(--surface2)] p-3 rounded-lg border border-[var(--border)]">
-                <div class="card-label">Face size (px)</div>
-                <div class="card-value font-['JetBrains_Mono',_monospace]" id="sizeStat">-</div>
-              </div>
-              <div class="bg-[var(--surface2)] p-3 rounded-lg border border-[var(--border)]">
-                <div class="card-label">Baseline size</div>
-                <div class="card-value font-['JetBrains_Mono',_monospace]" id="baseStat">-</div>
-              </div>
-              <div class="bg-[var(--surface2)] p-3 rounded-lg border border-[var(--border)]">
-                <div class="card-label">State</div>
-                <div class="card-value font-['JetBrains_Mono',_monospace]" id="stateStat">idle</div>
-              </div>
-            </div>
-          </div>
-        </div>
+          <PostureReport 
+            :report="generatedReport"
+            :session-duration="sessionElapsedTime"
+            :previous-sessions="previousSessionReports"
+            @download-report="downloadReport"
+            @start-new-session="startNewSession"
+            @go-to-dashboard="goToDashboard"
+          />
+        </app-card>
       </div>
     </div>
 
+    <!-- Toast Notification -->
     <div v-if="showToast" class="alert-toast">
       <div class="toast-header">
         <div class="toast-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17H5l1.4-1.4A2 2 0 0 0 7 14.2V11a5 5 0 1 1 10 0v3.2a2 2 0 0 0 .6 1.4L19 17h-4"/><path stroke-linecap="round" stroke-linejoin="round" d="M10 19a2 2 0 0 0 4 0"/></svg></div>

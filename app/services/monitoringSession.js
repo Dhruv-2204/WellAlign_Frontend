@@ -63,11 +63,23 @@ export function setMonitoringActive(isActive) {
 
 export function setLastMonitoringSession(session) {
   initMonitoringSession();
+  const durationSeconds = Number.isFinite(session?.durationSeconds)
+    ? session.durationSeconds
+    : Number.isFinite(session?.duration)
+      ? session.duration
+      : 0;
+
+  const goodPercentage = Number.isFinite(session?.summary?.goodPercentage)
+    ? session.summary.goodPercentage
+    : Number.isFinite(session?.score)
+      ? session.score
+      : 0;
+
   state.lastSession = {
-    duration: session?.duration || '00:00:00',
-    score: Number.isFinite(session?.score) ? session.score : 0,
-    endedAt: session?.endedAt || new Date().toISOString(),
-    summary: session?.summary || { good: 0, forward: 0, slouch: 0 }
+    duration: session?.durationFormatted || formatDuration(durationSeconds),
+    score: goodPercentage,
+    endedAt: session?.endedAt || session?.completedAt || new Date().toISOString(),
+    summary: session?.summary || { goodPercentage: goodPercentage, badPercentage: Math.max(0, 100 - goodPercentage) }
   };
   persistState();
 }
@@ -103,6 +115,7 @@ export function startRecordingSession(mode = 'live', duration = 300) {
 
   // Create new session
   state.currentSession = createSession(mode, mode === 'timed' ? duration : null);
+  setMonitoringActive(true);
   state.sessionMode = mode;
   state.timedSessionDuration = duration;
   state.sessionTimeRemaining = duration;
@@ -126,14 +139,39 @@ export function startRecordingSession(mode = 'live', duration = 300) {
  * @param {Object} postureMetrics - Posture analysis from postureAnalysis.js
  */
 export function recordPostureSnapshot(postureMetrics) {
-  if (!state.currentSession || !state.isSessionActive || !state.recordingEnabled) {
+  console.log('[recordPostureSnapshot] Called with metrics:', postureMetrics);
+  
+  if (!state.currentSession) {
+    console.warn('[recordPostureSnapshot] FAILED: no current session');
+    return;
+  }
+
+  if (!state.isSessionActive) {
+    console.warn('[recordPostureSnapshot] FAILED: session not active', { isSessionActive: state.isSessionActive });
+    return;
+  }
+
+  if (!state.recordingEnabled) {
+    console.warn('[recordPostureSnapshot] FAILED: recording disabled', { recordingEnabled: state.recordingEnabled });
     return;
   }
 
   if (!postureMetrics) {
+    console.warn('[recordPostureSnapshot] FAILED: no posture metrics');
     return;
   }
 
+  // Ensure metrics have required fields
+  if (!postureMetrics.classification || postureMetrics.overallSeverity === undefined) {
+    console.warn('[recordPostureSnapshot] FAILED: invalid metrics structure', {
+      hasClassification: !!postureMetrics.classification,
+      classification: postureMetrics.classification,
+      overallSeverity: postureMetrics.overallSeverity
+    });
+    return;
+  }
+
+  console.log('[recordPostureSnapshot] Validation passed. Recording snapshot.');
   // Add snapshot to current session
   recordSnapshot(state.currentSession, postureMetrics);
 }
@@ -165,7 +203,15 @@ export function endRecordingSession() {
   console.log('Session Report:', report);
 
   // Update state
-  state.lastSession = finalizedSession;
+  setMonitoringActive(false);
+  setLastMonitoringSession({
+    durationSeconds: finalizedSession.duration,
+    durationFormatted: formatDuration(finalizedSession.duration),
+    score: finalizedSession.summary?.goodPercentage || 0,
+    endedAt: finalizedSession.completedAt,
+    completedAt: finalizedSession.completedAt,
+    summary: finalizedSession.summary
+  });
   state.currentSession = null;
   state.isSessionActive = false;
   state.sessionTimeRemaining = 0;
@@ -279,4 +325,12 @@ export function cleanupSession() {
   if (state.isSessionActive && state.currentSession) {
     endRecordingSession();
   }
+}
+
+function formatDuration(totalSeconds) {
+  const seconds = Math.max(0, Math.floor(totalSeconds || 0));
+  const h = String(Math.floor(seconds / 3600)).padStart(2, '0');
+  const m = String(Math.floor((seconds % 3600) / 60)).padStart(2, '0');
+  const s = String(seconds % 60).padStart(2, '0');
+  return `${h}:${m}:${s}`;
 }

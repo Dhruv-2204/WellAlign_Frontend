@@ -26,7 +26,7 @@ export const DashboardView = {
     }
 
     function goToMonitoring() {
-      router.push({ name: 'monitoring' });
+      router.push({ name: 'monitoring', query: { report: 'last' } });
     }
     const {
       showToast,

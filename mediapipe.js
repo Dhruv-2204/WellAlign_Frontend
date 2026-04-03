@@ -1,25 +1,55 @@
 // --------- UI elements ----------
-const video = document.getElementById("video");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
-const startBtn = document.getElementById("startBtn");
-const stopBtn = document.getElementById("stopBtn");
-const baselineBtn = document.getElementById("baselineBtn");
-const resetBtn = document.getElementById("resetBtn");
-const tolRange = document.getElementById("tol");
-const soundBtn = document.getElementById("soundBtn");
-const overlayBtn = document.getElementById("overlayBtn");
-const statusLabel = document.getElementById("statusLabel");
-const baselineLabel = document.getElementById("baselineLabel");
-const tolLabel = document.getElementById("tolLabel");
-const sizeStat = document.getElementById("sizeStat");
-const baseStat = document.getElementById("baseStat");
-const stateStat = document.getElementById("stateStat");
-const alertOverlay = document.getElementById("alertOverlay");
-const ackBtn = document.getElementById("ackBtn");
-const pauseBtn = document.getElementById("pauseBtn");
-const soundLabel = document.getElementById("soundLabel");
-const notifyBtn = document.getElementById("notifyBtn");
+// Wrapper functions to safely get DOM elements (may not exist immediately in Vue apps)
+function getUIElement(id) {
+  return document.getElementById(id);
+}
+
+let video = null;
+let canvas = null;
+let ctx = null;
+let startBtn = null;
+let stopBtn = null;
+let baselineBtn = null;
+let resetBtn = null;
+let tolRange = null;
+let soundBtn = null;
+let overlayBtn = null;
+let statusLabel = null;
+let baselineLabel = null;
+let tolLabel = null;
+let sizeStat = null;
+let baseStat = null;
+let stateStat = null;
+let alertOverlay = null;
+let ackBtn = null;
+let pauseBtn = null;
+let soundLabel = null;
+let notifyBtn = null;
+
+// Initialize UI elements when needed
+function initializeUIElements() {
+  video = getUIElement("video");
+  canvas = getUIElement("canvas");
+  if (canvas) ctx = canvas.getContext("2d");
+  startBtn = getUIElement("startBtn");
+  stopBtn = getUIElement("stopBtn");
+  baselineBtn = getUIElement("baselineBtn");
+  resetBtn = getUIElement("resetBtn");
+  tolRange = getUIElement("tol");
+  soundBtn = getUIElement("soundBtn");
+  overlayBtn = getUIElement("overlayBtn");
+  statusLabel = getUIElement("statusLabel");
+  baselineLabel = getUIElement("baselineLabel");
+  tolLabel = getUIElement("tolLabel");
+  sizeStat = getUIElement("sizeStat");
+  baseStat = getUIElement("baseStat");
+  stateStat = getUIElement("stateStat");
+  alertOverlay = getUIElement("alertOverlay");
+  ackBtn = getUIElement("ackBtn");
+  pauseBtn = getUIElement("pauseBtn");
+  soundLabel = getUIElement("soundLabel");
+  notifyBtn = getUIElement("notifyBtn");
+}
 
 // --------- App state ----------
 let camera = null;
@@ -206,21 +236,22 @@ function resetTitle() {
 
 // --------- helpers ----------
 function fitCanvas() {
+  if (!canvas || !video) return;
   canvas.width = video.videoWidth || 1380;
   canvas.height = video.videoHeight || 820;
 }
 function setStatus(t) {
-  statusLabel.textContent = t;
+  if (statusLabel) statusLabel.textContent = t;
 }
 function setState(t) {
-  stateStat.textContent = t;
+  if (stateStat) stateStat.textContent = t;
 }
 function updateUI() {
-  baselineLabel.textContent = baselineSize
+  if (baselineLabel) baselineLabel.textContent = baselineSize
     ? Math.round(baselineSize) + " px"
     : "not set";
-  tolLabel.textContent = tolerancePct + "%";
-  soundLabel.textContent = soundOn ? "On" : "Muted";
+  if (tolLabel) tolLabel.textContent = tolerancePct + "%";
+  if (soundLabel) soundLabel.textContent = soundOn ? "On" : "Muted";
 }
 function now() {
   return Date.now();
@@ -248,6 +279,7 @@ function beep() {
 }
 
 function showOverlay(show) {
+  if (!alertOverlay) return;
   if (!overlayOn) {
     alertOverlay.classList.remove("visible");
     return;
@@ -256,6 +288,7 @@ function showOverlay(show) {
 }
 
 function faceBoxHeight(landmarks) {
+  if (!canvas) return 0;
   let minY = 1,
     maxY = 0;
   for (const lm of landmarks) {
@@ -266,6 +299,7 @@ function faceBoxHeight(landmarks) {
 }
 
 function drawFace(landmarks) {
+  if (!ctx || !canvas) return;
   ctx.save();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   let minX = 1,
@@ -451,10 +485,14 @@ async function initPose() {
         
         // Trigger callback for Vue components
         if (typeof window.onPostureUpdate === 'function') {
+          console.log('[mediapipe.onPose] Invoking window.onPostureUpdate with', results.poseLandmarks.length, 'landmarks');
           window.onPostureUpdate(results.poseLandmarks);
+        } else {
+          console.warn('[mediapipe.onPose] window.onPostureUpdate is not a function');
         }
       } else {
         window.postureData.poseWorks = false;
+        console.warn('[mediapipe.onPose] No poseLandmarks in results');
       }
     });
     
@@ -478,10 +516,24 @@ async function initializeMediaPipeModels() {
 
 async function startCamera() {
   try {
+    console.log('[startCamera] Starting camera initialization');
+    // Initialize UI elements and models
+    initializeUIElements();
+    console.log('[startCamera] UI elements initialized. window.onPostureUpdate is', typeof window.onPostureUpdate);
+    
     // Initialize MediaPipe models if not already done
     if (!faceMesh || !pose) {
       setStatus("Loading MediaPipe models...");
+      console.log('[startCamera] Initializing MediaPipe models');
       await initializeMediaPipeModels();
+      console.log('[startCamera] MediaPipe models initialized successfully');
+    }
+    
+    // Make sure we have video element
+    if (!video) {
+      console.error('Video element not found in DOM');
+      setStatus("Video element not found");
+      return;
     }
     
     // Request camera permission with error handling
@@ -499,8 +551,11 @@ async function startCamera() {
         height: 820
       });
       
+      console.log('[startCamera] Camera object created. Starting camera...');
       await camera.start();
+      console.log('[startCamera] Camera started successfully');
       running = true;
+      console.log('[startCamera] Running flag set to true');
       setStatus("Camera started - Detecting pose");
     } catch (cameraError) {
       if (cameraError.name === 'NotAllowedError') {
@@ -533,19 +588,23 @@ async function stopCamera() {
     }
     
     // Stop all camera tracks
-    const stream = video.srcObject;
-    if (stream && typeof stream.getTracks === "function") {
-      stream.getTracks().forEach((track) => {
+    if (video && video.srcObject && typeof video.srcObject.getTracks === "function") {
+      video.srcObject.getTracks().forEach((track) => {
         track.stop();
       });
     }
     
     // Reset video element
-    video.pause();
-    video.srcObject = null;
+    if (video) {
+      video.pause();
+      video.srcObject = null;
+    }
     
     // Clear canvas and UI
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (ctx && canvas) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    
     showOverlay(false);
     resetTitle();
     setState("idle");
@@ -567,45 +626,72 @@ async function stopCamera() {
 }
 
 // --------- events ----------
-startBtn.addEventListener("click", startCamera);
-stopBtn.addEventListener("click", stopCamera);
-baselineBtn.addEventListener("click", () => {
-  const val = parseFloat(sizeStat.textContent);
-  if (Number.isFinite(val)) {
-    baselineSize = val;
-    updateUI();
-    setStatus("Baseline set");
+// Only attach event listeners if buttons exist in DOM
+function attachButtonListeners() {
+  if (startBtn) startBtn.addEventListener("click", startCamera);
+  if (stopBtn) stopBtn.addEventListener("click", stopCamera);
+  
+  if (baselineBtn) {
+    baselineBtn.addEventListener("click", () => {
+      const val = parseFloat(sizeStat?.textContent);
+      if (Number.isFinite(val)) {
+        baselineSize = val;
+        updateUI();
+        setStatus("Baseline set");
+      }
+    });
   }
-});
-resetBtn.addEventListener("click", () => {
-  baselineSize = null;
-  baseStat.textContent = "—";
-  setStatus("Baseline cleared");
-  updateUI();
-});
-tolRange.addEventListener("input", (e) => {
-  tolerancePct = parseInt(e.target.value, 10);
-  updateUI();
-});
-soundBtn.addEventListener("click", () => {
-  soundOn = !soundOn;
-  updateUI();
-  audioCtx?.resume?.();
-});
-overlayBtn.addEventListener("click", () => {
-  overlayOn = !overlayOn;
-  if (!overlayOn) showOverlay(false);
-  updateUI();
-});
-ackBtn.addEventListener("click", () => {
-  ackSilenceUntil = now() + 12000;
-  showOverlay(false);
-});
-pauseBtn.addEventListener("click", () => {
-  pausedUntil = now() + 5 * 60 * 1000;
-  showOverlay(false);
-  setStatus("Paused for 5 minutes");
-});
+  
+  if (resetBtn) {
+    resetBtn.addEventListener("click", () => {
+      baselineSize = null;
+      if (baseStat) baseStat.textContent = "—";
+      setStatus("Baseline cleared");
+      updateUI();
+    });
+  }
+  
+  if (tolRange) {
+    tolRange.addEventListener("input", (e) => {
+      tolerancePct = parseInt(e.target.value, 10);
+      updateUI();
+    });
+  }
+  
+  if (soundBtn) {
+    soundBtn.addEventListener("click", () => {
+      soundOn = !soundOn;
+      updateUI();
+      audioCtx?.resume?.();
+    });
+  }
+  
+  if (overlayBtn) {
+    overlayBtn.addEventListener("click", () => {
+      overlayOn = !overlayOn;
+      if (!overlayOn) showOverlay(false);
+      updateUI();
+    });
+  }
+  
+  if (ackBtn) {
+    ackBtn.addEventListener("click", () => {
+      ackSilenceUntil = now() + 12000;
+      showOverlay(false);
+    });
+  }
+  
+  if (pauseBtn) {
+    pauseBtn.addEventListener("click", () => {
+      pausedUntil = now() + 5 * 60 * 1000;
+      showOverlay(false);
+      setStatus("Paused for 5 minutes");
+    });
+  }
+}
+
+// Attach listeners when DOM is ready or when startCamera is called
+window.attachMediaPipeListeners = attachButtonListeners;
 
 // --------- window exports ----------
 // Export functions so Vue components can call them
