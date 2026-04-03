@@ -35,6 +35,7 @@ async function ensureMediaPipeScripts() {
       await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js');
       await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js');
       await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js');
+      await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js');
       await loadScript('mediapipe.js');
     })();
   }
@@ -76,6 +77,22 @@ export const MonitoringView = {
     let metricsInterval = null;
     let sessionInterval = null;
     let elapsed = 2700;
+
+    // Define metrics listener at setup level so it can be cleaned up in onBeforeUnmount
+    const metricsListener = (event) => {
+      const metrics = event.detail;
+      headPositionWidth.value = metrics.headPositionWidth;
+      headPositionColor.value = metrics.headPositionColor;
+      headPosition.value = metrics.headPosition;
+      headPositionGradient.value = metrics.headPositionGradient;
+      shoulderWidth.value = metrics.shoulderWidth;
+      shoulderColor.value = metrics.shoulderColor;
+      shoulderAlignment.value = metrics.shoulderAlignment;
+      spineWidth.value = metrics.spineWidth;
+      spineColor.value = metrics.spineColor;
+      spineCurvature.value = metrics.spineCurvature;
+      spineGradient.value = metrics.spineGradient;
+    };
 
     function syncMonitoringState(active) {
       isMonitoring.value = active;
@@ -160,14 +177,21 @@ export const MonitoringView = {
         syncMonitoringState(false);
       };
 
+      // Listen for realtime metrics updates from mediapipe.js
+      window.addEventListener('metricsUpdated', metricsListener);
+
       const startBtnEl = document.getElementById('startBtn');
       const stopBtnEl = document.getElementById('stopBtn');
-      startBtnEl?.addEventListener('click', () => {
+      startBtnEl?.addEventListener('click', async () => {
         syncMonitoringState(true);
+        await window.startCamera?.();
+        showStatusToast('Camera Started', 'Live monitoring is now active.', 'var(--accent)');
       });
-      stopBtnEl?.addEventListener('click', () => {
+      stopBtnEl?.addEventListener('click', async () => {
+        await window.stopCamera?.();
         syncMonitoringState(false);
         recordLastSession();
+        showStatusToast('Camera Stopped', 'Monitoring session ended.', 'var(--muted)');
       });
 
       startLocalIntervals();
@@ -196,6 +220,8 @@ export const MonitoringView = {
       if (window.__notifyCameraStopped) {
         window.__notifyCameraStopped = null;
       }
+      // Clean up metrics listener
+      window.removeEventListener('metricsUpdated', metricsListener);
     });
 
     return {
