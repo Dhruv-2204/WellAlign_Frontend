@@ -1,0 +1,51 @@
+// Central route registry for the WellAlign SPA.
+import { DashboardView } from './views/DashboardView.js';
+import { AssessView } from './views/AssessView.js';
+import { PlanView } from './views/PlanView.js';
+import { MonitoringView } from './views/MonitoringView.js';
+import { ProgressView } from './views/ProgressView.js';
+import { SettingsView } from './views/SettingsView.js';
+import { LoginView } from './views/LoginView.js';
+import { NotFoundView } from './views/NotFoundView.js';
+import { initAuth, isAuthenticated } from './services/auth.js';
+
+const { createRouter, createWebHashHistory } = VueRouter;
+
+// Hash routing keeps deployment simple for static hosting environments.
+const routes = [
+  { path: '/', name: 'dashboard', component: DashboardView, meta: { requiresAuth: true } },
+  { path: '/assess', name: 'assess', component: AssessView, meta: { requiresAuth: true } },
+  { path: '/plan', name: 'plan', component: PlanView, meta: { requiresAuth: true } },
+  { path: '/monitoring', name: 'monitoring', component: MonitoringView, meta: { requiresAuth: true } },
+  { path: '/progress', name: 'progress', component: ProgressView, meta: { requiresAuth: true } },
+  { path: '/settings', name: 'settings', component: SettingsView, meta: { requiresAuth: true } },
+  { path: '/login', name: 'login', component: LoginView, meta: { guestOnly: true } },
+  { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView }
+];
+
+export const router = createRouter({
+  history: createWebHashHistory(),
+  routes,
+  // Reset scroll on navigation so each page starts at the top.
+  scrollBehavior() {
+    return { top: 0 };
+  }
+});
+
+// Minimal route guard scaffold: protects app pages and keeps logged-in users out of login.
+router.beforeEach((to) => {
+  initAuth();
+
+  if (to.meta.requiresAuth && !isAuthenticated()) {
+    return {
+      name: 'login',
+      query: { redirect: to.fullPath }
+    };
+  }
+
+  if (to.meta.guestOnly && isAuthenticated()) {
+    return { name: 'dashboard' };
+  }
+
+  return true;
+});

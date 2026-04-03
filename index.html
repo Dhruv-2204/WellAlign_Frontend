@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- Core document metadata and responsive viewport setup. -->
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WellAlign SPA</title>
+
+  <!-- App fonts and CDN libraries used by the SPA setup. -->
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.js"></script>
+  <link rel="stylesheet" href="styles.css" />
+
+  <!-- Apply persisted theme before initial paint to avoid visual flicker. -->
+  <script type="module">
+    import { bootstrapThemeFromStorage } from './app/utils/theme.js';
+    bootstrapThemeFromStorage();
+  </script>
+</head>
+<body>
+  <!-- Vue mounts the routed SPA layout into this root element. -->
+  <div id="app"></div>
+
+  <!-- Main app bootstrap (router + global components + root layout). -->
+  <script type="module" src="app/main.js"></script>
+</body>
+</html>
