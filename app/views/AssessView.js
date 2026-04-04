@@ -9,6 +9,20 @@ export const AssessView = {
     const backendStatus = ref('Connecting to backend...');
     const frontFileName = ref('');
     const sideFileName = ref('');
+    
+    // Image file objects and previews
+    const frontFile = ref(null);
+    const sideFile = ref(null);
+    const frontPreview = ref('');
+    const sidePreview = ref('');
+    
+    // Image metadata
+    const frontDimensions = ref({ width: 0, height: 0, size: 0 });
+    const sideDimensions = ref({ width: 0, height: 0, size: 0 });
+    
+    // Drag & drop state
+    const frontDragActive = ref(false);
+    const sideDragActive = ref(false);
 
     const {
       showToast,
@@ -23,25 +37,143 @@ export const AssessView = {
       { id: 2, timestamp: 'Mar 28, 5:40 PM', mode: 'Front + Side', score: 80, scoreColor: 'var(--accent2)' }
     ]);
 
+    // Helper: Process image file and extract metadata
+    async function processImageFile(file, isFront = true) {
+      if (!file.type.startsWith('image/')) {
+        showStatusToast('Invalid File', 'Please upload an image file (PNG/JPG).', 'var(--warn)');
+        return false;
+      }
+
+      // Check file size (10MB max)
+      const maxSize = 10 * 1024 * 1024;
+      if (file.size > maxSize) {
+        showStatusToast('File Too Large', 'Image must be under 10MB.', 'var(--warn)');
+        return false;
+      }
+
+      // Create preview
+      const reader = new FileReader();
+      return new Promise((resolve) => {
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            if (isFront) {
+              frontFile.value = file;
+              frontFileName.value = file.name;
+              frontPreview.value = e.target.result;
+              frontDimensions.value = {
+                width: img.width,
+                height: img.height,
+                size: (file.size / 1024).toFixed(2) // KB
+              };
+            } else {
+              sideFile.value = file;
+              sideFileName.value = file.name;
+              sidePreview.value = e.target.result;
+              sideDimensions.value = {
+                width: img.width,
+                height: img.height,
+                size: (file.size / 1024).toFixed(2) // KB
+              };
+            }
+            showStatusToast(
+              isFront ? 'Front View Uploaded' : 'Side View Uploaded',
+              `${file.name} (${img.width}×${img.height}px)`
+            );
+            resolve(true);
+          };
+          img.onerror = () => {
+            showStatusToast('Image Error', 'Could not read image. Try a different file.', 'var(--warn)');
+            resolve(false);
+          };
+          img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
     // Capture selected front-view image metadata and confirm to the user.
     function onFrontFileChange(event) {
       const file = event.target.files && event.target.files[0];
       if (!file) return;
-      frontFileName.value = file.name;
-      showStatusToast('Front View Uploaded', `Selected: ${file.name}`);
+      processImageFile(file, true);
     }
 
     // Capture selected side-view image metadata and confirm to the user.
     function onSideFileChange(event) {
       const file = event.target.files && event.target.files[0];
       if (!file) return;
-      sideFileName.value = file.name;
-      showStatusToast('Side View Uploaded', `Selected: ${file.name}`);
+      processImageFile(file, false);
+    }
+
+    // Drag & drop handlers for front view
+    function onFrontDragOver(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      frontDragActive.value = true;
+    }
+
+    function onFrontDragLeave(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      frontDragActive.value = false;
+    }
+
+    function onFrontFileDrop(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      frontDragActive.value = false;
+      const file = event.dataTransfer?.files?.[0];
+      if (!file) return;
+      processImageFile(file, true);
+    }
+
+    // Drag & drop handlers for side view
+    function onSideDragOver(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      sideDragActive.value = true;
+    }
+
+    function onSideDragLeave(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      sideDragActive.value = false;
+    }
+
+    function onSideFileDrop(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      sideDragActive.value = false;
+      const file = event.dataTransfer?.files?.[0];
+      if (!file) return;
+      processImageFile(file, false);
+    }
+
+    function clearFrontImage() {
+      frontFile.value = null;
+      frontFileName.value = '';
+      frontPreview.value = '';
+      frontDimensions.value = { width: 0, height: 0, size: 0 };
+    }
+
+    function clearSideImage() {
+      sideFile.value = null;
+      sideFileName.value = '';
+      sidePreview.value = '';
+      sideDimensions.value = { width: 0, height: 0, size: 0 };
+    }
+
+    function getImageQuality(dimensions) {
+      const shortEdge = Math.min(dimensions.width || 0, dimensions.height || 0);
+      if (shortEdge >= 1200) return { label: 'High quality', tone: 'good' };
+      if (shortEdge >= 800) return { label: 'Good quality', tone: 'ok' };
+      return { label: 'Low quality', tone: 'warn' };
     }
 
     // Validate both uploads before queuing assessment generation.
     function generateAssessment() {
-      if (!frontFileName.value || !sideFileName.value) {
+      if (!frontFile.value || !sideFile.value) {
         showStatusToast('Upload Required', 'Please upload both front and side images first.', 'var(--warn)');
         return;
       }
@@ -61,12 +193,29 @@ export const AssessView = {
       backendStatus,
       frontFileName,
       sideFileName,
+      frontFile,
+      sideFile,
+      frontPreview,
+      sidePreview,
+      frontDimensions,
+      sideDimensions,
+      frontDragActive,
+      sideDragActive,
       recentAssessments,
       showToast,
       toastTitle,
       toastMessage,
       onFrontFileChange,
       onSideFileChange,
+      onFrontDragOver,
+      onFrontDragLeave,
+      onFrontFileDrop,
+      onSideDragOver,
+      onSideDragLeave,
+      onSideFileDrop,
+      clearFrontImage,
+      clearSideImage,
+      getImageQuality,
       generateAssessment,
       hideStatusToast
     };
@@ -93,21 +242,75 @@ export const AssessView = {
             <span class="badge badge-muted">Front + Side</span>
           </div>
 
-          <div class="grid gap-4 grid-cols-1 md:grid-cols-2">
-            <label class="p-4 rounded-xl border border-[var(--border)] bg-[var(--surface2)] min-h-[200px] flex flex-col items-center justify-center gap-3 cursor-pointer">
+          <div class="assess-upload-grid">
+            <label
+              class="upload-card"
+              :class="{ 'is-drag': frontDragActive, 'has-file': !!frontPreview, 'front-card': true }"
+              @dragover="onFrontDragOver"
+              @dragleave="onFrontDragLeave"
+              @drop="onFrontFileDrop"
+            >
               <input class="hidden" type="file" accept="image/png,image/jpeg" @change="onFrontFileChange" />
-              <div class="text-3xl"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-8 h-8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16V4"/><path stroke-linecap="round" stroke-linejoin="round" d="m7 9 5-5 5 5"/><path stroke-linecap="round" stroke-linejoin="round" d="M4 18h16"/></svg></div>
-              <div class="font-semibold">Front View</div>
-              <p class="text-[var(--muted)] text-sm text-center">Drag & drop or click to upload</p>
-              <button class="btn-calibrate w-full mt-0" type="button">{{ frontFileName || 'Upload' }}</button>
+              <div class="upload-card-head">
+                <span class="upload-view-tag">Front View</span>
+                <span class="upload-view-hint">Chest facing camera</span>
+              </div>
+
+              <div v-if="!frontPreview" class="upload-empty-state">
+                <div class="upload-icon-wrap"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-8 h-8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16V4"/><path stroke-linecap="round" stroke-linejoin="round" d="m7 9 5-5 5 5"/><path stroke-linecap="round" stroke-linejoin="round" d="M4 18h16"/></svg></div>
+                <p class="upload-empty-title">Drop front posture photo</p>
+                <p class="upload-empty-subtitle">Drag and drop or click to upload</p>
+                <span class="upload-empty-chip">PNG or JPG</span>
+              </div>
+
+              <div v-else class="upload-preview-block">
+                <div class="upload-preview-frame">
+                  <img :src="frontPreview" class="upload-preview-img" alt="Front posture preview" />
+                </div>
+                <div class="upload-meta-row">
+                  <div class="upload-meta-main">
+                    <div class="upload-file-name">{{ frontFileName }}</div>
+                    <div class="upload-file-specs">{{ frontDimensions.width }} × {{ frontDimensions.height }} px • {{ frontDimensions.size }} KB</div>
+                  </div>
+                  <button class="upload-replace-btn" type="button" @click.stop.prevent="clearFrontImage">Replace</button>
+                </div>
+                <span class="upload-quality" :class="'quality-' + getImageQuality(frontDimensions).tone">{{ getImageQuality(frontDimensions).label }}</span>
+              </div>
             </label>
 
-            <label class="p-4 rounded-xl border border-[var(--border)] bg-[var(--surface2)] min-h-[200px] flex flex-col items-center justify-center gap-3 cursor-pointer">
+            <label
+              class="upload-card"
+              :class="{ 'is-drag': sideDragActive, 'has-file': !!sidePreview, 'side-card': true }"
+              @dragover="onSideDragOver"
+              @dragleave="onSideDragLeave"
+              @drop="onSideFileDrop"
+            >
               <input class="hidden" type="file" accept="image/png,image/jpeg" @change="onSideFileChange" />
-              <div class="text-3xl"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-8 h-8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16V4"/><path stroke-linecap="round" stroke-linejoin="round" d="m7 9 5-5 5 5"/><path stroke-linecap="round" stroke-linejoin="round" d="M4 18h16"/></svg></div>
-              <div class="font-semibold">Side View</div>
-              <p class="text-[var(--muted)] text-sm text-center">Drag & drop or click to upload</p>
-              <button class="btn-calibrate w-full mt-0" type="button">{{ sideFileName || 'Upload' }}</button>
+              <div class="upload-card-head">
+                <span class="upload-view-tag">Side View</span>
+                <span class="upload-view-hint">Profile posture angle</span>
+              </div>
+
+              <div v-if="!sidePreview" class="upload-empty-state">
+                <div class="upload-icon-wrap"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-8 h-8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16V4"/><path stroke-linecap="round" stroke-linejoin="round" d="m7 9 5-5 5 5"/><path stroke-linecap="round" stroke-linejoin="round" d="M4 18h16"/></svg></div>
+                <p class="upload-empty-title">Drop side posture photo</p>
+                <p class="upload-empty-subtitle">Drag and drop or click to upload</p>
+                <span class="upload-empty-chip">PNG or JPG</span>
+              </div>
+
+              <div v-else class="upload-preview-block">
+                <div class="upload-preview-frame">
+                  <img :src="sidePreview" class="upload-preview-img" alt="Side posture preview" />
+                </div>
+                <div class="upload-meta-row">
+                  <div class="upload-meta-main">
+                    <div class="upload-file-name">{{ sideFileName }}</div>
+                    <div class="upload-file-specs">{{ sideDimensions.width }} × {{ sideDimensions.height }} px • {{ sideDimensions.size }} KB</div>
+                  </div>
+                  <button class="upload-replace-btn" type="button" @click.stop.prevent="clearSideImage">Replace</button>
+                </div>
+                <span class="upload-quality" :class="'quality-' + getImageQuality(sideDimensions).tone">{{ getImageQuality(sideDimensions).label }}</span>
+              </div>
             </label>
           </div>
 
