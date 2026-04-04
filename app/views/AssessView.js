@@ -1,5 +1,6 @@
 // Assess view: collects front/side uploads and stages posture assessment requests.
 import { checkBackendHealth } from '../services/backendHealth.js';
+import { submitAssessment as submitAssessmentAPI } from '../services/assessment.js';
 import { useStatusToast } from '../utils/useStatusToast.js';
 
 export const AssessView = {
@@ -23,6 +24,15 @@ export const AssessView = {
     // Drag & drop state
     const frontDragActive = ref(false);
     const sideDragActive = ref(false);
+    const frontInputRef = ref(null);
+    const sideInputRef = ref(null);
+
+    // Processing state
+    const isProcessing = ref(false);
+    const currentPhase = ref(null); // "analyzing_front" | "analyzing_side" | "generating_report"
+    const report = ref(null);
+    const reportHistory = ref([]);
+    const errorState = ref(null); // { type: 'landmark_error' | 'timeout' | 'partial' | 'failed', message, image }
 
     const {
       showToast,
@@ -108,6 +118,7 @@ export const AssessView = {
 
     // Drag & drop handlers for front view
     function onFrontDragOver(event) {
+      if (frontPreview.value) return;
       event.preventDefault();
       event.stopPropagation();
       frontDragActive.value = true;
@@ -123,6 +134,7 @@ export const AssessView = {
       event.preventDefault();
       event.stopPropagation();
       frontDragActive.value = false;
+      if (frontPreview.value) return;
       const file = event.dataTransfer?.files?.[0];
       if (!file) return;
       processImageFile(file, true);
@@ -130,6 +142,7 @@ export const AssessView = {
 
     // Drag & drop handlers for side view
     function onSideDragOver(event) {
+      if (sidePreview.value) return;
       event.preventDefault();
       event.stopPropagation();
       sideDragActive.value = true;
@@ -145,9 +158,18 @@ export const AssessView = {
       event.preventDefault();
       event.stopPropagation();
       sideDragActive.value = false;
+      if (sidePreview.value) return;
       const file = event.dataTransfer?.files?.[0];
       if (!file) return;
       processImageFile(file, false);
+    }
+
+    function triggerFrontPicker() {
+      frontInputRef.value?.click();
+    }
+
+    function triggerSidePicker() {
+      sideInputRef.value?.click();
     }
 
     function clearFrontImage() {
@@ -164,6 +186,16 @@ export const AssessView = {
       sideDimensions.value = { width: 0, height: 0, size: 0 };
     }
 
+    function replaceFrontImage() {
+      clearFrontImage();
+      triggerFrontPicker();
+    }
+
+    function replaceSideImage() {
+      clearSideImage();
+      triggerSidePicker();
+    }
+
     function getImageQuality(dimensions) {
       const shortEdge = Math.min(dimensions.width || 0, dimensions.height || 0);
       if (shortEdge >= 1200) return { label: 'High quality', tone: 'good' };
@@ -171,13 +203,113 @@ export const AssessView = {
       return { label: 'Low quality', tone: 'warn' };
     }
 
-    // Validate both uploads before queuing assessment generation.
-    function generateAssessment() {
+    // Validate both uploads and initiate assessment submission.
+    function confirmImages() {
       if (!frontFile.value || !sideFile.value) {
         showStatusToast('Upload Required', 'Please upload both front and side images first.', 'var(--warn)');
         return;
       }
-      showStatusToast('Assessment Queued', 'Images uploaded. Alignment metrics will be generated shortly.');
+      // Clear previous errors and reports
+      errorState.value = null;
+      report.value = null;
+      // Trigger assessment submission (will be implemented in Task 3)
+      submitAssessment(frontFile.value, sideFile.value);
+    }
+
+    // Submit images for assessment via API with state management
+    async function submitAssessment(frontFileObj, sideFileObj) {
+      isProcessing.value = true;
+      errorState.value = null;
+      report.value = null;
+
+      try {
+        // Call API with phase change callback for UI updates
+        const result = await submitAssessmentAPI(
+          frontFileObj,
+          sideFileObj,
+          (phase) => {
+            currentPhase.value = phase;
+          }
+        );
+
+        // Handle results based on status
+        if (result.status === 'success') {
+          // Full success: both analyses worked
+          report.value = result;
+          addToReportHistory(result);
+          showStatusToast('Assessment Complete', 'Your posture assessment is ready.', 'var(--accent)');
+        } else if (result.status === 'partial') {
+          // Partial success: one analysis worked
+          report.value = result;
+          addToReportHistory(result);
+          
+          // Show warning based on which failed
+          const warnings = result.warnings || [];
+          const warningMsg = warnings.length > 0 ? warnings[0] : 'Partial assessment completed';
+          showStatusToast('Partial Assessment', warningMsg, 'var(--warn)');
+        } else {
+          // Full failure: neither analysis worked
+          errorState.value = result.error || { message: 'Assessment failed. Please try again.' };
+          
+          const errorMsg = result.error?.message || 'Assessment failed';
+          const advice = result.error?.advice || '';
+          showStatusToast(
+            'Assessment Failed',
+            advice ? `${errorMsg}\n${advice}` : errorMsg,
+            'var(--danger)'
+          );
+        }
+      } catch (error) {
+        // Unexpected error
+        errorState.value = {
+          type: 'fatal_error',
+          message: error.message || 'An unexpected error occurred'
+        };
+        showStatusToast('Error', error.message || 'Assessment failed', 'var(--danger)');
+      } finally {
+        isProcessing.value = false;
+        currentPhase.value = null;
+      }
+    }
+
+    // Helper: Add successful assessment to history
+    function addToReportHistory(assessmentResult) {
+      const timestamp = new Date().toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      });
+
+      const frontScore = assessmentResult.frontResult?.success ? assessmentResult.frontResult.score : null;
+      const sideScore = assessmentResult.sideResult?.success ? assessmentResult.sideResult.score : null;
+
+      const entry = {
+        id: Date.now(),
+        timestamp,
+        mode: assessmentResult.status === 'partial' 
+          ? (frontScore ? 'Front Only' : 'Side Only')
+          : 'Front + Side',
+        frontScore,
+        sideScore,
+        overallScore: assessmentResult.report?.overall_score || null,
+        status: assessmentResult.status,
+        fullData: assessmentResult
+      };
+
+      // Add to beginning of history
+      reportHistory.value.unshift(entry);
+    }
+
+    // Helper: Get phase display text and step number
+    function getPhaseInfo() {
+      const phases = {
+        'analyzing_front': { text: 'Analyzing Front View', step: 1, total: 3 },
+        'analyzing_side': { text: 'Analyzing Side View', step: 2, total: 3 },
+        'generating_report': { text: 'Generating Report', step: 3, total: 3 }
+      };
+      return phases[currentPhase.value] || { text: 'Processing...', step: 0, total: 3 };
     }
 
     // Resolve backend availability so the UI can explain whether data is local or synced.
@@ -201,6 +333,13 @@ export const AssessView = {
       sideDimensions,
       frontDragActive,
       sideDragActive,
+      frontInputRef,
+      sideInputRef,
+      isProcessing,
+      currentPhase,
+      report,
+      reportHistory,
+      errorState,
       recentAssessments,
       showToast,
       toastTitle,
@@ -213,10 +352,17 @@ export const AssessView = {
       onSideDragOver,
       onSideDragLeave,
       onSideFileDrop,
+      triggerFrontPicker,
+      triggerSidePicker,
       clearFrontImage,
       clearSideImage,
+      replaceFrontImage,
+      replaceSideImage,
       getImageQuality,
-      generateAssessment,
+      getPhaseInfo,
+      confirmImages,
+      submitAssessment,
+      addToReportHistory,
       hideStatusToast
     };
   },
@@ -243,14 +389,14 @@ export const AssessView = {
           </div>
 
           <div class="assess-upload-grid">
-            <label
+            <div
               class="upload-card"
               :class="{ 'is-drag': frontDragActive, 'has-file': !!frontPreview, 'front-card': true }"
               @dragover="onFrontDragOver"
               @dragleave="onFrontDragLeave"
               @drop="onFrontFileDrop"
             >
-              <input class="hidden" type="file" accept="image/png,image/jpeg" @change="onFrontFileChange" />
+              <input ref="frontInputRef" class="hidden" type="file" accept="image/png,image/jpeg" @change="onFrontFileChange" />
               <div class="upload-card-head">
                 <span class="upload-view-tag">Front View</span>
                 <span class="upload-view-hint">Chest facing camera</span>
@@ -261,31 +407,43 @@ export const AssessView = {
                 <p class="upload-empty-title">Drop front posture photo</p>
                 <p class="upload-empty-subtitle">Drag and drop or click to upload</p>
                 <span class="upload-empty-chip">PNG or JPG</span>
+                <button class="upload-pick-btn" type="button" @click.stop="triggerFrontPicker">Choose Front Image</button>
               </div>
 
               <div v-else class="upload-preview-block">
                 <div class="upload-preview-frame">
                   <img :src="frontPreview" class="upload-preview-img" alt="Front posture preview" />
+                  <div class="upload-silhouette front">
+                    <svg viewBox="0 0 64 64" aria-hidden="true">
+                      <circle cx="32" cy="13" r="8"></circle>
+                      <rect x="23" y="22" width="18" height="20" rx="8"></rect>
+                      <rect x="14" y="24" width="8" height="18" rx="4"></rect>
+                      <rect x="42" y="24" width="8" height="18" rx="4"></rect>
+                      <rect x="24" y="42" width="7" height="17" rx="3.5"></rect>
+                      <rect x="33" y="42" width="7" height="17" rx="3.5"></rect>
+                    </svg>
+                  </div>
                 </div>
                 <div class="upload-meta-row">
                   <div class="upload-meta-main">
                     <div class="upload-file-name">{{ frontFileName }}</div>
                     <div class="upload-file-specs">{{ frontDimensions.width }} × {{ frontDimensions.height }} px • {{ frontDimensions.size }} KB</div>
                   </div>
-                  <button class="upload-replace-btn" type="button" @click.stop.prevent="clearFrontImage">Replace</button>
+                  <button class="upload-replace-btn" type="button" @click.stop.prevent="replaceFrontImage">Replace Image</button>
                 </div>
                 <span class="upload-quality" :class="'quality-' + getImageQuality(frontDimensions).tone">{{ getImageQuality(frontDimensions).label }}</span>
+                <p class="upload-locked-note">Image is locked. Use Replace Image to change it.</p>
               </div>
-            </label>
+            </div>
 
-            <label
+            <div
               class="upload-card"
               :class="{ 'is-drag': sideDragActive, 'has-file': !!sidePreview, 'side-card': true }"
               @dragover="onSideDragOver"
               @dragleave="onSideDragLeave"
               @drop="onSideFileDrop"
             >
-              <input class="hidden" type="file" accept="image/png,image/jpeg" @change="onSideFileChange" />
+              <input ref="sideInputRef" class="hidden" type="file" accept="image/png,image/jpeg" @change="onSideFileChange" />
               <div class="upload-card-head">
                 <span class="upload-view-tag">Side View</span>
                 <span class="upload-view-hint">Profile posture angle</span>
@@ -296,22 +454,31 @@ export const AssessView = {
                 <p class="upload-empty-title">Drop side posture photo</p>
                 <p class="upload-empty-subtitle">Drag and drop or click to upload</p>
                 <span class="upload-empty-chip">PNG or JPG</span>
+                <button class="upload-pick-btn" type="button" @click.stop="triggerSidePicker">Choose Side Image</button>
               </div>
 
               <div v-else class="upload-preview-block">
                 <div class="upload-preview-frame">
                   <img :src="sidePreview" class="upload-preview-img" alt="Side posture preview" />
+                  <div class="upload-silhouette side">
+                    <svg viewBox="0 0 64 64" aria-hidden="true">
+                      <circle cx="29" cy="13" r="8"></circle>
+                      <path d="M26 22h12c4 0 7 3 7 7v12c0 3-2 5-5 6l-5 2v10h-7V45l-4-2c-3-1-5-3-5-6V29c0-4 3-7 7-7z"></path>
+                      <rect x="36" y="26" width="7" height="16" rx="3.5"></rect>
+                    </svg>
+                  </div>
                 </div>
                 <div class="upload-meta-row">
                   <div class="upload-meta-main">
                     <div class="upload-file-name">{{ sideFileName }}</div>
                     <div class="upload-file-specs">{{ sideDimensions.width }} × {{ sideDimensions.height }} px • {{ sideDimensions.size }} KB</div>
                   </div>
-                  <button class="upload-replace-btn" type="button" @click.stop.prevent="clearSideImage">Replace</button>
+                  <button class="upload-replace-btn" type="button" @click.stop.prevent="replaceSideImage">Replace Image</button>
                 </div>
                 <span class="upload-quality" :class="'quality-' + getImageQuality(sideDimensions).tone">{{ getImageQuality(sideDimensions).label }}</span>
+                <p class="upload-locked-note">Image is locked. Use Replace Image to change it.</p>
               </div>
-            </label>
+            </div>
           </div>
 
           <div class="mt-4 flex flex-wrap gap-2 text-[0.85rem] text-[var(--muted)]">
@@ -321,7 +488,14 @@ export const AssessView = {
           </div>
 
           <div class="mt-4">
-            <button class="btn-calibrate w-full mt-0" @click="generateAssessment">Generate Assessment</button>
+            <button 
+              class="btn-calibrate w-full mt-0" 
+              @click="confirmImages"
+              :disabled="!frontFile || !sideFile || isProcessing"
+              :class="{ 'opacity-50 cursor-not-allowed': !frontFile || !sideFile || isProcessing }"
+            >
+              {{ isProcessing ? 'Processing...' : 'Confirm Images' }}
+            </button>
           </div>
         </div>
 
@@ -372,6 +546,19 @@ export const AssessView = {
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div v-if="isProcessing" class="assess-loading-overlay">
+      <div class="assess-loading-backdrop"></div>
+      <div class="assess-loading-content">
+        <div class="assess-spinner"></div>
+        <div class="assess-phase-text">{{ getPhaseInfo().text }}</div>
+        <div class="assess-progress-bar">
+          <div class="assess-progress-fill" :style="{ width: (getPhaseInfo().step / getPhaseInfo().total) * 100 + '%' }"></div>
+        </div>
+        <div class="assess-progress-step">Step {{ getPhaseInfo().step }} of {{ getPhaseInfo().total }}</div>
       </div>
     </div>
 
