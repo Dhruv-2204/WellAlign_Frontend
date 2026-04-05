@@ -1,6 +1,7 @@
 // Assess view: collects front/side uploads and stages posture assessment requests.
 import { checkBackendHealth } from '../services/backendHealth.js';
 import { submitAssessment as submitAssessmentAPI } from '../services/assessment.js';
+import { fetchAssessmentHistory, saveAssessment, formatAssessmentForHistory } from '../services/assessmentHistory.js';
 import { useStatusToast } from '../utils/useStatusToast.js';
 
 export const AssessView = {
@@ -32,7 +33,9 @@ export const AssessView = {
     const currentPhase = ref(null); // "analyzing_front" | "analyzing_side" | "generating_report"
     const report = ref(null);
     const reportHistory = ref([]);
+    const selectedHistoryItem = ref(null); // For expandable history details
     const errorState = ref(null); // { type: 'landmark_error' | 'timeout' | 'partial' | 'failed', message, image }
+    const isLoadingHistory = ref(false);
 
     const {
       showToast,
@@ -42,10 +45,12 @@ export const AssessView = {
       hideStatusToast
     } = useStatusToast(3500);
 
-    const recentAssessments = ref([
-      { id: 1, timestamp: 'Today, 10:15 AM', mode: 'Front + Side', score: 82, scoreColor: 'var(--accent)' },
-      { id: 2, timestamp: 'Mar 28, 5:40 PM', mode: 'Front + Side', score: 80, scoreColor: 'var(--accent2)' }
-    ]);
+    // Helper: Get status badge color
+    function getStatusBadgeColor(status) {
+      if (status === 'success') return 'var(--accent)';
+      if (status === 'partial') return 'var(--warn)';
+      return 'var(--danger)';
+    }
 
     // Helper: Process image file and extract metadata
     async function processImageFile(file, isFront = true) {
@@ -238,6 +243,16 @@ export const AssessView = {
           report.value = result;
           addToReportHistory(result);
           showStatusToast('Assessment Complete', 'Your posture assessment is ready.', 'var(--accent)');
+          
+          // Save to backend
+          try {
+            await saveAssessment(result);
+            // Refresh history from backend
+            await loadAssessmentHistory();
+          } catch (saveError) {
+            console.error('Failed to save assessment:', saveError);
+            showStatusToast('Save Warning', 'Assessment saved locally but backend sync failed.', 'var(--warn)');
+          }
         } else if (result.status === 'partial') {
           // Partial success: one analysis worked
           report.value = result;
@@ -247,6 +262,14 @@ export const AssessView = {
           const warnings = result.warnings || [];
           const warningMsg = warnings.length > 0 ? warnings[0] : 'Partial assessment completed';
           showStatusToast('Partial Assessment', warningMsg, 'var(--warn)');
+          
+          // Still try to save partial result
+          try {
+            await saveAssessment(result);
+            await loadAssessmentHistory();
+          } catch (saveError) {
+            console.error('Failed to save partial assessment:', saveError);
+          }
         } else {
           // Full failure: neither analysis worked
           errorState.value = result.error || { message: 'Assessment failed. Please try again.' };
@@ -302,7 +325,98 @@ export const AssessView = {
       reportHistory.value.unshift(entry);
     }
 
+    // Retry handlers for partial failures
+    async function retryFrontOnly() {
+      if (!frontFile.value) return;
+      isProcessing.value = true;
+      errorState.value = null;
+      currentPhase.value = 'analyzing_front';
+      
+      try {
+        const result = await submitAssessmentAPI(
+          frontFile.value,
+          new File([new Blob()], 'empty.jpg'),
+          (phase) => { currentPhase.value = phase; }
+        );
+        
+        if (result.frontResult?.success && report.value) {
+          report.value.frontResult = result.frontResult;
+          report.value.status = report.value.sideResult?.success ? 'success' : 'partial';
+          showStatusToast('Front Re-analysis Complete', 'Front view updated successfully', 'var(--accent)');
+        } else {
+          errorState.value = result.error || { message: 'Front analysis failed again. Please re-upload.' };
+          showStatusToast('Front Analysis Failed', errorState.value.message, 'var(--danger)');
+        }
+      } finally {
+        isProcessing.value = false;
+        currentPhase.value = null;
+      }
+    }
+
+    async function retrySideOnly() {
+      if (!sideFile.value) return;
+      isProcessing.value = true;
+      errorState.value = null;
+      currentPhase.value = 'analyzing_side';
+      
+      try {
+        const result = await submitAssessmentAPI(
+          new File([new Blob()], 'empty.jpg'),
+          sideFile.value,
+          (phase) => { currentPhase.value = phase; }
+        );
+        
+        if (result.sideResult?.success && report.value) {
+          report.value.sideResult = result.sideResult;
+          report.value.status = report.value.frontResult?.success ? 'success' : 'partial';
+          showStatusToast('Side Re-analysis Complete', 'Side view updated successfully', 'var(--accent)');
+        } else {
+          errorState.value = result.error || { message: 'Side analysis failed again. Please re-upload.' };
+          showStatusToast('Side Analysis Failed', errorState.value.message, 'var(--danger)');
+        }
+      } finally {
+        isProcessing.value = false;
+        currentPhase.value = null;
+      }
+    }
+
+    function clearReportAndStartOver() {
+      report.value = null;
+      errorState.value = null;
+      clearFrontImage();
+      clearSideImage();
+      reportHistory.value = [];
+    }
+
+    function dismissError() {
+      errorState.value = null;
+    }
+
+    function getErrorTitle() {
+      if (!errorState.value) return 'Error';
+      const { type } = errorState.value;
+      if (type === 'landmark_error') return 'Landmarks Not Detected';
+      if (type === 'timeout') return 'Analysis Timeout';
+      if (type === 'both_failed') return 'Assessment Failed';
+      return 'Error';
+    }
+
     // Helper: Get phase display text and step number
+    // Load assessment history from backend
+    async function loadAssessmentHistory() {
+      isLoadingHistory.value = true;
+      try {
+        const assessmentData = await fetchAssessmentHistory();
+        reportHistory.value = assessmentData.map(formatAssessmentForHistory);
+        selectedHistoryItem.value = null; // Reset selection on reload
+      } catch (error) {
+        console.error('Failed to load assessment history:', error);
+        // Don't show toast for history load failures - it's non-blocking
+      } finally {
+        isLoadingHistory.value = false;
+      }
+    }
+
     function getPhaseInfo() {
       const phases = {
         'analyzing_front': { text: 'Analyzing Front View', step: 1, total: 3 },
@@ -319,6 +433,9 @@ export const AssessView = {
         unavailableMessage: 'Backend unavailable. You can still stage local uploads.',
         countSuffix: 'assessment entries available'
       });
+      
+      // Load assessment history
+      await loadAssessmentHistory();
     });
 
     return {
@@ -339,8 +456,9 @@ export const AssessView = {
       currentPhase,
       report,
       reportHistory,
+      selectedHistoryItem,
+      isLoadingHistory,
       errorState,
-      recentAssessments,
       showToast,
       toastTitle,
       toastMessage,
@@ -359,10 +477,17 @@ export const AssessView = {
       replaceFrontImage,
       replaceSideImage,
       getImageQuality,
+      getStatusBadgeColor,
       getPhaseInfo,
       confirmImages,
       submitAssessment,
       addToReportHistory,
+      loadAssessmentHistory,
+      retryFrontOnly,
+      retrySideOnly,
+      clearReportAndStartOver,
+      dismissError,
+      getErrorTitle,
       hideStatusToast
     };
   },
@@ -499,18 +624,165 @@ export const AssessView = {
           </div>
         </div>
 
-        <app-card title="Recent Assessments" badge="Auto-saved" badge-class="badge badge-green">
-          <app-list :items="recentAssessments">
-            <template #default="{ item }">
-              <div class="flex justify-between items-center p-3 bg-[var(--surface2)] rounded-lg">
+        <!-- Report Display Section -->
+        <div v-if="report" class="card assess-report-card" :class="'report-' + report.status">
+          <div class="assess-report-header">
+            <div>
+              <h2 class="font-[Syne] text-[1.3rem] font-bold mb-1">Assessment Report</h2>
+              <p class="text-[0.8rem] text-[var(--muted)]">{{ report.frontResult?.success || report.sideResult?.success ? 'Analysis Complete' : 'Partial Analysis' }}</p>
+            </div>
+            <button class="assess-close-btn" @click="clearReportAndStartOver">Start Over</button>
+          </div>
+
+          <!-- Warning Banner for Partial Reports -->
+          <div v-if="report.status === 'partial'" class="assess-warning-banner">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"></path>
+            </svg>
+            <div>
+              <div class="font-semibold text-[0.9rem]">{{ report.frontResult?.success ? 'Side analysis failed' : 'Front analysis failed' }}</div>
+              <p class="text-[0.8rem] text-[var(--muted)] mt-1">Only {{ report.frontResult?.success ? 'front' : 'side' }} posture was analyzed. Retry the failed analysis below.</p>
+            </div>
+          </div>
+
+          <!-- Scores Section -->
+          <div class="assess-scores-grid">
+            <div v-if="report.frontResult?.success" class="assess-score-box front">
+              <div class="assess-score-label">Front View Score</div>
+              <div class="assess-score-value">{{ report.frontResult.score }}%</div>
+              <div class="assess-score-findings text-[0.8rem]">
+                <div v-for="(finding, idx) in (report.frontResult?.findings || []).slice(0, 2)" :key="idx" class="text-[var(--muted)]">
+                  • {{ finding }}
+                </div>
+              </div>
+            </div>
+
+            <div v-if="report.sideResult?.success" class="assess-score-box side">
+              <div class="assess-score-label">Side View Score</div>
+              <div class="assess-score-value">{{ report.sideResult.score }}%</div>
+              <div class="assess-score-findings text-[0.8rem]">
+                <div v-for="(finding, idx) in (report.sideResult?.findings || []).slice(0, 2)" :key="idx" class="text-[var(--muted)]">
+                  • {{ finding }}
+                </div>
+              </div>
+            </div>
+
+            <div v-if="report.report?.overall_score" class="assess-score-box overall">
+              <div class="assess-score-label">Overall Assessment</div>
+              <div class="assess-score-value">{{ report.report.overall_score }}%</div>
+              <div class="assess-score-findings text-[0.8rem] text-[var(--muted)]">
+                Based on both views
+              </div>
+            </div>
+          </div>
+
+          <!-- Exercises Section -->
+          <div v-if="report.report?.exercises?.length" class="assess-exercises">
+            <h3 class="font-semibold mb-3">Recommended Exercises</h3>
+            <ul class="space-y-2">
+              <li v-for="(exercise, idx) in report.report.exercises.slice(0, 5)" :key="idx" class="text-[0.9rem] flex items-start gap-2">
+                <span class="text-[var(--accent)] font-bold">✓</span>
+                <span>{{ exercise }}</span>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Retry Buttons for Partial Reports -->
+          <div v-if="report.status === 'partial'" class="assess-retry-buttons gap-2 flex">
+            <button v-if="!report.frontResult?.success && frontFile" class="assess-retry-btn" @click="retryFrontOnly">Retry Front Analysis</button>
+            <button v-if="!report.sideResult?.success && sideFile" class="assess-retry-btn" @click="retrySideOnly">Retry Side Analysis</button>
+          </div>
+        </div>
+
+        <!-- Error Display Section -->
+        <div v-if="errorState && !report" class="card assess-error-card">
+          <div class="assess-error-header">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"></path>
+            </svg>
+            <h2 class="font-[Syne] text-[1.2rem] font-bold">{{ getErrorTitle() }}</h2>
+          </div>
+
+          <p class="text-[0.95rem] mb-4">{{ errorState.message }}</p>
+
+          <div v-if="errorState.advice" class="assess-error-advice">
+            <p class="font-semibold text-[0.9rem] mb-2">{{ errorState.type === 'landmark_error' ? 'Tips to improve detection:' : 'Please try again' }}</p>
+            <ul class="list-disc pl-5 space-y-1 text-[0.85rem] text-[var(--muted)]">
+              <li>{{ errorState.advice }}</li>
+              <li>Ensure good lighting and clear visibility</li>
+              <li>Stand in neutral posture with full body visible</li>
+            </ul>
+          </div>
+
+          <div class="flex gap-2 mt-5">
+            <button class="assess-error-btn primary" @click="dismissError">Dismiss</button>
+            <button class="assess-error-btn secondary" @click="clearReportAndStartOver">Upload New Images</button>
+          </div>
+        </div>
+
+        <app-card title="Assessment History" badge="Auto-synced" badge-class="badge badge-green">
+          <div v-if="isLoadingHistory" class="text-center py-6 text-[var(--muted)]">
+            <p>Loading history...</p>
+          </div>
+          
+          <div v-else-if="reportHistory.length === 0" class="text-center py-6 text-[var(--muted)]">
+            <p>No assessments yet. Complete one to view history.</p>
+          </div>
+          
+          <div v-else class="space-y-2">
+            <div 
+              v-for="item in reportHistory" 
+              :key="item.id"
+              class="assess-history-card" 
+              @click="selectedHistoryItem = selectedHistoryItem === item.id ? null : item.id"
+            >
+              <div class="assess-history-main">
                 <div>
                   <div class="font-semibold">{{ item.timestamp }}</div>
                   <div class="text-sm text-[var(--muted)]">{{ item.mode }}</div>
                 </div>
-                <div :style="{ color: item.scoreColor }" class="font-bold">Score {{ item.score }}%</div>
+                <div class="assess-history-scores">
+                  <div v-if="item.frontScore" class="text-center">
+                    <span class="text-[0.75rem] text-[var(--muted)]">Front</span>
+                    <span class="font-bold text-sm">{{ item.frontScore }}%</span>
+                  </div>
+                  <div v-if="item.sideScore" class="text-center">
+                    <span class="text-[0.75rem] text-[var(--muted)]">Side</span>
+                    <span class="font-bold text-sm">{{ item.sideScore }}%</span>
+                  </div>
+                  <div v-if="item.overallScore" class="text-center">
+                    <span class="text-[0.75rem] text-[var(--muted)]">Overall</span>
+                    <span class="font-bold text-sm">{{ item.overallScore }}%</span>
+                  </div>
+                </div>
               </div>
-            </template>
-          </app-list>
+              <div class="assess-history-status">
+                <span class="badge" :style="{ backgroundColor: getStatusBadgeColor(item.status), color: '#fff' }">
+                  {{ item.status.toUpperCase() }}
+                </span>
+              </div>
+              
+              <!-- Expandable Details -->
+              <div v-if="selectedHistoryItem === item.id" class="assess-history-details">
+                <div v-if="item.exercises && item.exercises.length" class="mt-3">
+                  <p class="font-semibold text-[0.9rem] mb-2">Recommended Exercises</p>
+                  <ul class="space-y-1 text-[0.85rem]">
+                    <li v-for="(ex, idx) in item.exercises.slice(0, 3)" :key="idx" class="text-[var(--muted)]">
+                      • {{ ex }}
+                    </li>
+                  </ul>
+                </div>
+                <div v-if="item.findings && item.findings.length" class="mt-3">
+                  <p class="font-semibold text-[0.9rem] mb-2">Key Findings</p>
+                  <ul class="space-y-1 text-[0.85rem]">
+                    <li v-for="(finding, idx) in item.findings.slice(0, 3)" :key="idx" class="text-[var(--muted)]">
+                      • {{ finding }}
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
         </app-card>
       </div>
 
