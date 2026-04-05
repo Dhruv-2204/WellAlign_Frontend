@@ -1,5 +1,6 @@
 import { getApiBaseUrl } from './api.js';
 import { getAuthToken } from './auth.js';
+import { analyzeFrontImageLocally } from './frontImageAnalysis.js';
 
 /**
  * Assessment Service
@@ -104,7 +105,7 @@ function parseErrorResponse(error, defaultImage = null) {
  * Main: Submit images for sequential posture analysis
  * 
  * Sequential Flow:
- * 1. Send front image → get front_score, findings
+ * 1. Analyze front image locally (MediaPipe + posture heuristics)
  * 2. If step 1 succeeds, send side image → get side_score, findings
  * 3. If step 1 or 2 succeeds, generate report → get exercises, combined findings
  * 
@@ -129,18 +130,11 @@ export async function submitAssessment(frontFile, sideFile, onPhaseChange = null
     if (onPhaseChange) onPhaseChange('analyzing_front');
 
     try {
-      const frontFormData = buildFormData(frontFile);
-      const frontResponse = await fetchWithTimeout(
-        `${apiBaseUrl}/assessments/analyze-front`,
-        {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${getAuthToken()}` },
-          body: frontFormData
-        },
-        OPERATION_TIMEOUT
-      );
+      const frontData = await analyzeFrontImageLocally(frontFile);
 
-      const frontData = frontResponse?.data ?? frontResponse;
+      if (!frontData?.success) {
+        throw new Error(frontData?.message || 'Local front analysis failed');
+      }
 
       results.frontResult = {
         success: true,

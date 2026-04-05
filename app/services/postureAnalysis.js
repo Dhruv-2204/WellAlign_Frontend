@@ -495,6 +495,96 @@ export function analyzePosture(landmarks) {
 }
 
 /**
+ * Snapshot posture analysis for single images (no hold-duration gating).
+ * Useful for uploaded still-image assessment flows.
+ */
+export function analyzePostureSnapshot(landmarks) {
+  if (!landmarks || landmarks.length < 25) {
+    return {
+      status: 'NO_DATA',
+      classification: 'UNKNOWN',
+      overallSeverity: 0,
+      issues: [],
+      timestamp: Date.now()
+    };
+  }
+
+  const forwardHead = analyzeForwardHead(landmarks);
+  const headTilt = analyzeHeadTilt(landmarks);
+  const verticalTilt = analyzeVerticalTilt(landmarks);
+  const shoulderAsymmetry = analyzeShoulderAsymmetry(landmarks);
+  const slouching = analyzeSlouching(landmarks);
+  const faceDistance = analyzeFaceDistanceFromScreen(landmarks);
+
+  const flaggedIssues = [];
+
+  if (forwardHead.detected) {
+    flaggedIssues.push({
+      type: 'FORWARD_HEAD',
+      severity: forwardHead.severity,
+      value: forwardHead.value.toFixed(2)
+    });
+  }
+
+  if (headTilt.detected) {
+    flaggedIssues.push({
+      type: 'HEAD_TILT',
+      severity: headTilt.severity,
+      value: headTilt.value.toFixed(2)
+    });
+  }
+
+  if (verticalTilt.detected) {
+    flaggedIssues.push({
+      type: 'VERTICAL_TILT',
+      severity: verticalTilt.severity,
+      value: verticalTilt.value.toFixed(2)
+    });
+  }
+
+  if (shoulderAsymmetry.detected) {
+    flaggedIssues.push({
+      type: 'SHOULDER_ASYMMETRY',
+      severity: shoulderAsymmetry.severity,
+      value: shoulderAsymmetry.value.toFixed(2)
+    });
+  }
+
+  if (slouching.detected) {
+    flaggedIssues.push({
+      type: 'SLOUCHING',
+      severity: slouching.severity,
+      value: slouching.value.toFixed(2)
+    });
+  }
+
+  const overallSeverity = flaggedIssues.length > 0
+    ? Math.round(flaggedIssues.reduce((sum, issue) => sum + issue.severity, 0) / flaggedIssues.length)
+    : 0;
+
+  const classification = flaggedIssues.length === 0 ? 'GOOD' :
+    overallSeverity > 60 ? 'CRITICAL' :
+    overallSeverity > 40 ? 'POOR' : 'WARNING';
+
+  return {
+    status: 'SUCCESS',
+    classification,
+    overallSeverity,
+    issues: flaggedIssues,
+    detailedMetrics: {
+      forwardHead,
+      faceDistance,
+      headTilt,
+      verticalTilt,
+      shoulderAsymmetry,
+      slouching
+    },
+    holdDurationMs: 0,
+    timestamp: Date.now()
+  };
+}
+
+/**
  * Reset all hold-duration trackers
  * Call this at the start of a new session
  */
