@@ -131,7 +131,7 @@ export async function submitAssessment(frontFile, sideFile, onPhaseChange = null
     try {
       const frontFormData = buildFormData(frontFile);
       const frontResponse = await fetchWithTimeout(
-        `${apiBaseUrl}/assessment/analyze-front`,
+        `${apiBaseUrl}/assessments/analyze-front`,
         {
           method: 'POST',
           headers: { Authorization: `Bearer ${getAuthToken()}` },
@@ -140,11 +140,15 @@ export async function submitAssessment(frontFile, sideFile, onPhaseChange = null
         OPERATION_TIMEOUT
       );
 
+      const frontData = frontResponse?.data ?? frontResponse;
+
       results.frontResult = {
         success: true,
-        score: frontResponse.score || 0,
-        findings: frontResponse.findings || [],
-        landmarks: frontResponse.landmarks || []
+        score: frontData.score || 0,
+        class: frontData.class || null,
+        confidence: frontData.confidence || null,
+        findings: frontData.findings || [],
+        landmarks: frontData.landmarks || frontData.features || []
       };
     } catch (frontError) {
       const parsedError = parseErrorResponse(frontError, 'front');
@@ -162,7 +166,7 @@ export async function submitAssessment(frontFile, sideFile, onPhaseChange = null
     try {
       const sideFormData = buildFormData(sideFile);
       const sideResponse = await fetchWithTimeout(
-        `${apiBaseUrl}/assessment/analyze-side`,
+        `${apiBaseUrl}/assessments/analyze-side`,
         {
           method: 'POST',
           headers: { Authorization: `Bearer ${getAuthToken()}` },
@@ -171,11 +175,15 @@ export async function submitAssessment(frontFile, sideFile, onPhaseChange = null
         OPERATION_TIMEOUT
       );
 
+      const sideData = sideResponse?.data ?? sideResponse;
+
       results.sideResult = {
         success: true,
-        score: sideResponse.score || 0,
-        findings: sideResponse.findings || [],
-        landmarks: sideResponse.landmarks || []
+        score: sideData.score || 0,
+        class: sideData.class || null,
+        confidence: sideData.confidence || null,
+        findings: sideData.findings || [],
+        landmarks: sideData.landmarks || sideData.features || []
       };
     } catch (sideError) {
       const parsedError = parseErrorResponse(sideError, 'side');
@@ -211,14 +219,17 @@ export async function submitAssessment(frontFile, sideFile, onPhaseChange = null
 
     try {
       const reportPayload = {
-        front_analysis: frontSuccess ? results.frontResult : null,
-        side_analysis: sideSuccess ? results.sideResult : null,
+        frontResult: frontSuccess ? results.frontResult : null,
+        sideResult: sideSuccess ? results.sideResult : null,
+        // Compatibility keys in case backend accepts alternate names
+        frontAnalysis: frontSuccess ? results.frontResult : null,
+        sideAnalysis: sideSuccess ? results.sideResult : null,
         front_success: frontSuccess,
         side_success: sideSuccess
       };
 
       const reportResponse = await fetchWithTimeout(
-        `${apiBaseUrl}/assessment/generate-report`,
+        `${apiBaseUrl}/assessments/analysis/report`,
         {
           method: 'POST',
           headers: getHeaders(),
@@ -227,12 +238,14 @@ export async function submitAssessment(frontFile, sideFile, onPhaseChange = null
         OPERATION_TIMEOUT
       );
 
+      const reportData = reportResponse?.data ?? reportResponse;
+
       results.report = {
-        combined_findings: reportResponse.combined_findings || [],
-        exercises: reportResponse.exercises || [],
-        symptoms: reportResponse.symptoms || [],
-        overall_score: reportResponse.overall_score || 0,
-        recommendations: reportResponse.recommendations || []
+        combined_findings: reportData.combined_findings || [],
+        exercises: reportData.exercises || [],
+        symptoms: reportData.symptoms || [],
+        overall_score: reportData.overall_score || 0,
+        recommendations: reportData.recommendations || []
       };
 
       if (results.status === 'success' || !results.error) {
