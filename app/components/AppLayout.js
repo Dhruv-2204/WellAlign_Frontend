@@ -15,12 +15,16 @@ export const AppLayout = {
     const isLoggedIn = Vue.computed(() => Boolean(auth.token));
     const isMonitoringActive = Vue.computed(() => monitoringState.isMonitoring);
     const userDisplayName = Vue.computed(() => auth.user?.name || 'User');
+    const userInitials = Vue.computed(() => {
+      const name = auth.user?.name || 'U';
+      return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+    });
     const menuOpen = ref(false);
     const userMenuRef = ref(null);
     const themeMode = ref(getSavedTheme());
 
     const links = [
-      { name: 'dashboard', label: 'Dashboard', to: '/' },
+      { name: 'dashboard', label: 'Dashboard', to: '/dashboard' },
       { name: 'assess', label: 'Assess', to: '/assess' },
       { name: 'plan', label: 'Plan', to: '/plan' },
       { name: 'monitoring', label: 'Monitoring', to: '/monitoring' },
@@ -71,7 +75,8 @@ export const AppLayout = {
       onLogout,
       themeMode,
       getThemeIcon,
-      userDisplayName
+      userDisplayName,
+      userInitials
     };
   },
   template: `
@@ -118,14 +123,24 @@ export const AppLayout = {
           </router-link>
 
           <div v-else class="relative" id="userMenu" ref="userMenuRef">
-            <div class="avatar cursor-pointer" id="userMenuButton" @click="menuOpen = !menuOpen">{{ userDisplayName }}</div>
+            <button class="user-profile-btn" id="userMenuButton" @click="menuOpen = !menuOpen" :title="userDisplayName">
+              <div class="user-avatar">{{ userInitials }}</div>
+              <span class="user-name-display">{{ userDisplayName }}</span>
+            </button>
             <div
-              class="absolute right-0 mt-2 w-36 bg-[var(--surface)] border border-[var(--border)] rounded-xl shadow-lg"
+              class="user-dropdown"
               :class="{ hidden: !menuOpen }"
               id="userMenuDropdown"
             >
-              <router-link class="block px-4 py-2 text-sm hover:bg-[var(--surface2)]" to="/settings">Profile</router-link>
-              <button class="block w-full text-left px-4 py-2 text-sm hover:bg-[var(--surface2)]" @click="onLogout">Logout</button>
+              <div class="user-dropdown-header">{{ userDisplayName }}</div>
+              <router-link class="user-dropdown-item" to="/settings">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.26 2.37 1.806a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.26 3.31-1.806 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.26-2.37-1.806a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.26-3.31 1.806-2.37a1.724 1.724 0 002.572-1.065z"></path></svg>
+                Settings
+              </router-link>
+              <button class="user-dropdown-item" @click="onLogout">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                Logout
+              </button>
             </div>
           </div>
         </div>

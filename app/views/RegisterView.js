@@ -1,15 +1,17 @@
-// LoginView - Real backend authentication
-import { loginBackend, isAuthenticated } from '../services/auth.js';
+// RegisterView - Real backend registration
+import { registerBackend, isAuthenticated } from '../services/auth.js';
 import { useStatusToast } from '../utils/useStatusToast.js';
 
-export const LoginView = {
+export const RegisterView = {
   setup() {
     const { ref, onMounted } = Vue;
     const router = VueRouter.useRouter();
 
     // Form state
+    const name = ref('');
     const email = ref('');
     const password = ref('');
+    const confirmPassword = ref('');
     const isLoading = ref(false);
     const errors = ref({});
 
@@ -32,6 +34,12 @@ export const LoginView = {
     function validateForm() {
       errors.value = {};
 
+      if (!name.value.trim()) {
+        errors.value.name = 'Name is required';
+      } else if (name.value.trim().length < 2) {
+        errors.value.name = 'Name must be at least 2 characters';
+      }
+
       if (!email.value.trim()) {
         errors.value.email = 'Email is required';
       } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.value)) {
@@ -44,11 +52,17 @@ export const LoginView = {
         errors.value.password = 'Password must be at least 8 characters';
       }
 
+      if (!confirmPassword.value) {
+        errors.value.confirmPassword = 'Please confirm your password';
+      } else if (confirmPassword.value !== password.value) {
+        errors.value.confirmPassword = 'Passwords do not match';
+      }
+
       return Object.keys(errors.value).length === 0;
     }
 
-    // Handle login
-    async function handleLogin() {
+    // Handle register
+    async function handleRegister() {
       if (!validateForm()) {
         showStatusToast('Validation Error', 'Please check your inputs', 'var(--warn)');
         return;
@@ -58,19 +72,19 @@ export const LoginView = {
       errors.value = {};
 
       try {
-        const result = await loginBackend(email.value, password.value);
+        const result = await registerBackend(name.value.trim(), email.value.trim(), password.value);
 
         if (result.success) {
-          showStatusToast('Login Successful', `Welcome back, ${result.user.name}!`, 'var(--accent)');
+          showStatusToast('Registration Successful', 'Redirecting to login...', 'var(--accent)');
           
-          // Redirect to assess page
+          // Redirect to login page
           setTimeout(() => {
-            router.push('/assess');
-          }, 1000);
+            router.push('/login');
+          }, 1500);
         } else {
           // Handle backend errors
-          const errorMsg = result.message || 'Login failed. Please try again.';
-          showStatusToast('Login Failed', errorMsg, 'var(--danger)');
+          const errorMsg = result.message || 'Registration failed. Please try again.';
+          showStatusToast('Registration Failed', errorMsg, 'var(--danger)');
           
           // Show specific field errors if available
           if (result.errors) {
@@ -78,7 +92,7 @@ export const LoginView = {
           }
         }
       } catch (error) {
-        console.error('Login error:', error);
+        console.error('Registration error:', error);
         showStatusToast(
           'Error',
           error.message || 'An unexpected error occurred',
@@ -92,16 +106,18 @@ export const LoginView = {
     // Handle Enter key
     function handleKeyPress(event) {
       if (event.key === 'Enter' && !isLoading.value) {
-        handleLogin();
+        handleRegister();
       }
     }
 
     return {
+      name,
       email,
       password,
+      confirmPassword,
       isLoading,
       errors,
-      handleLogin,
+      handleRegister,
       handleKeyPress,
       showToast,
       toastTitle,
@@ -113,12 +129,28 @@ export const LoginView = {
     <div class="auth-container">
       <div class="auth-card">
         <div class="auth-header">
-          <h1 class="font-[Syne] text-[2rem] font-extrabold">Welcome Back</h1>
-          <p class="text-[var(--muted)] text-[0.95rem]">Login to your WellAlign account</p>
+          <h1 class="font-[Syne] text-[2rem] font-extrabold">Create Account</h1>
+          <p class="text-[var(--muted)] text-[0.95rem]">Join WellAlign to start your posture journey</p>
         </div>
 
-        <!-- Login Form -->
-        <form class="auth-form" @submit.prevent="handleLogin">
+        <!-- Register Form -->
+        <form class="auth-form" @submit.prevent="handleRegister">
+          <!-- Name Field -->
+          <div class="form-group">
+            <label for="name" class="form-label">Full Name</label>
+            <input
+              id="name"
+              v-model="name"
+              type="text"
+              class="form-input"
+              placeholder="John Doe"
+              @keypress="handleKeyPress"
+              :class="{ 'input-error': errors.name }"
+              :disabled="isLoading"
+            />
+            <div v-if="errors.name" class="form-error">{{ errors.name }}</div>
+          </div>
+
           <!-- Email Field -->
           <div class="form-group">
             <label for="email" class="form-label">Email Address</label>
@@ -151,14 +183,30 @@ export const LoginView = {
             <div v-if="errors.password" class="form-error">{{ errors.password }}</div>
           </div>
 
-          <!-- Login Button -->
+          <!-- Confirm Password Field -->
+          <div class="form-group">
+            <label for="confirmPassword" class="form-label">Confirm Password</label>
+            <input
+              id="confirmPassword"
+              v-model="confirmPassword"
+              type="password"
+              class="form-input"
+              placeholder="••••••••"
+              @keypress="handleKeyPress"
+              :class="{ 'input-error': errors.confirmPassword }"
+              :disabled="isLoading"
+            />
+            <div v-if="errors.confirmPassword" class="form-error">{{ errors.confirmPassword }}</div>
+          </div>
+
+          <!-- Register Button -->
           <button
             type="submit"
             class="btn-auth"
             :disabled="isLoading"
             :class="{ 'opacity-50 cursor-not-allowed': isLoading }"
           >
-            {{ isLoading ? 'Logging in...' : 'Login' }}
+            {{ isLoading ? 'Creating Account...' : 'Sign Up' }}
           </button>
         </form>
 
@@ -167,11 +215,11 @@ export const LoginView = {
           <span>or</span>
         </div>
 
-        <!-- Register Link -->
+        <!-- Login Link -->
         <div class="auth-footer">
           <p class="text-[0.9rem]">
-            Don't have an account?
-            <router-link to="/register" class="auth-link">Create one now</router-link>
+            Already have an account?
+            <router-link to="/login" class="auth-link">Login here</router-link>
           </p>
         </div>
       </div>
