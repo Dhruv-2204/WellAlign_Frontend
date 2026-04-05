@@ -1,35 +1,24 @@
 // Authentication service - connects to real backend API
+// NOTE: Auth state is memory-only. On page reload, users must re-login.
+// All tokens and user data are cleared to enforce DB-backed sessions.
 import { getApiBaseUrl } from './api.js';
-
-const AUTH_USER_KEY = 'wa-auth-user';
-const AUTH_TOKEN_KEY = 'wa-auth-token';
 
 const state = Vue.reactive({
   user: null,
   token: null,
-  initialized: false
+  initialized: true  // Always initialized (no localStorage to load)
 });
 
-function persistAuth(user, token) {
-  localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
-  localStorage.setItem(AUTH_TOKEN_KEY, token);
+export function clearSession() {
+  state.user = null;
+  state.token = null;
 }
 
-export function initAuth() {
-  if (state.initialized) return;
-
-  try {
-    const savedUser = localStorage.getItem(AUTH_USER_KEY);
-    const savedToken = localStorage.getItem(AUTH_TOKEN_KEY);
-
-    state.user = savedUser ? JSON.parse(savedUser) : null;
-    state.token = savedToken || null;
-  } catch {
-    state.user = null;
-    state.token = null;
+export function initAuth(reset = false) {
+  if (reset) {
+    clearSession();
   }
-
-  state.initialized = true;
+  // No localStorage loading - state stays as initialized
 }
 
 /**
@@ -107,10 +96,8 @@ export async function loginBackend(email, password) {
       };
     }
 
-    // Store in state and localStorage
     state.user = user;
     state.token = token;
-    persistAuth(user, token);
 
     return {
       success: true,
@@ -159,7 +146,6 @@ export async function getMe() {
 
     const user = data.data || data;
     state.user = user;
-    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
 
     return {
       success: true,
@@ -177,8 +163,6 @@ export async function getMe() {
 export function logout() {
   state.user = null;
   state.token = null;
-  localStorage.removeItem(AUTH_USER_KEY);
-  localStorage.removeItem(AUTH_TOKEN_KEY);
 }
 
 export function isAuthenticated() {

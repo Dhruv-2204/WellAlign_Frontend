@@ -8,7 +8,7 @@ import { SettingsView } from './views/SettingsView.js';
 import { LoginView } from './views/LoginView.js';
 import { RegisterView } from './views/RegisterView.js';
 import { NotFoundView } from './views/NotFoundView.js';
-import { initAuth, isAuthenticated } from './services/auth.js';
+import { initAuth, isAuthenticated, logout, getMe } from './services/auth.js';
 
 const { createRouter, createWebHashHistory } = VueRouter;
 
@@ -35,10 +35,25 @@ export const router = createRouter({
   }
 });
 
-// Minimal route guard scaffold: protects app pages and keeps logged-in users out of login.
-router.beforeEach((to) => {
+// Route guard: protects app pages, keeps logged-in users out of login, validates tokens
+router.beforeEach(async (to) => {
   initAuth();
 
+  // Try to validate token if we have one
+  if (isAuthenticated()) {
+    try {
+      const result = await getMe();
+      if (!result.success) {
+        // Token is invalid, clear it
+        logout();
+      }
+    } catch (err) {
+      console.error('Token validation failed:', err);
+      logout();
+    }
+  }
+
+  // After validation, check guards
   if (to.meta.requiresAuth && !isAuthenticated()) {
     return {
       name: 'login',

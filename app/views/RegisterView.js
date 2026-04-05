@@ -26,7 +26,7 @@ export const RegisterView = {
     // Redirect if already logged in
     onMounted(() => {
       if (isAuthenticated()) {
-        router.push('/assess');
+        router.push('/dashboard');
       }
     });
 

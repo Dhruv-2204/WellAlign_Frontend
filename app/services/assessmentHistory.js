@@ -1,5 +1,5 @@
 import { getApiBaseUrl } from './api.js';
-import { getAuthToken } from './auth.js';
+import { getAuthToken, useAuth } from './auth.js';
 
 /**
  * Assessment History Service
@@ -20,13 +20,21 @@ function getHeaders() {
  */
 export async function fetchAssessmentHistory() {
   const apiBaseUrl = getApiBaseUrl();
+  const token = getAuthToken();
+  const auth = useAuth();
+  const currentUserId = auth?.user?.id ? String(auth.user.id) : null;
+
+  if (!token) {
+    return [];
+  }
 
   try {
     const response = await fetch(
       `${apiBaseUrl}/assessments`,
       {
         method: 'GET',
-        headers: getHeaders()
+        headers: getHeaders(),
+        cache: 'no-store'
       }
     );
 
@@ -36,9 +44,25 @@ export async function fetchAssessmentHistory() {
     }
 
     const data = await response.json();
-    // Ensure sorted by latest first
-    const assessments = Array.isArray(data) ? data : data.assessments || [];
-    return assessments.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    // Backend wraps payload as { success, data }, while some environments may return raw arrays.
+    const assessments = Array.isArray(data)
+      ? data
+      : (Array.isArray(data?.data)
+          ? data.data
+          : (Array.isArray(data?.assessments) ? data.assessments : []));
+
+    // Defense in depth: only keep records for the current signed-in user.
+    const scoped = currentUserId
+      ? assessments.filter((item) => String(item.userId || '') === currentUserId)
+      : assessments;
+
+    // Ensure sorted by latest first. Prefer createdAt from DB, fallback to timestamp.
+    return scoped.sort((a, b) => {
+      const aDate = new Date(a.createdAt || a.timestamp || 0).getTime();
+      const bDate = new Date(b.createdAt || b.timestamp || 0).getTime();
+      return bDate - aDate;
+    });
   } catch (error) {
     console.error('Failed to fetch assessment history:', error);
     return []; // Return empty array on error
@@ -52,23 +76,40 @@ export async function fetchAssessmentHistory() {
  */
 export async function saveAssessment(assessmentResult) {
   const apiBaseUrl = getApiBaseUrl();
+  const token = getAuthToken();
+
+  if (!token) {
+    throw new Error('Not authenticated');
+  }
 
   try {
     const payload = {
       timestamp: new Date().toISOString(),
       status: assessmentResult.status || 'unknown',
-      front_score: assessmentResult.frontResult?.success ? assessmentResult.frontResult.score : null,
-      front_findings: assessmentResult.frontResult?.success ? assessmentResult.frontResult.findings || [] : [],
-      side_score: assessmentResult.sideResult?.success ? assessmentResult.sideResult.score : null,
-      side_findings: assessmentResult.sideResult?.success ? assessmentResult.sideResult.findings || [] : [],
-      overall_score: assessmentResult.report?.overall_score || null,
-      combined_findings: assessmentResult.report?.combined_findings || [],
-      exercises: assessmentResult.report?.exercises || [],
-      symptoms: assessmentResult.report?.symptoms || [],
-      recommendations: assessmentResult.report?.recommendations || [],
+      // Send as nested objects, not flat fields!
+      frontResult: assessmentResult.frontResult ? {
+        success: assessmentResult.frontResult.success,
+        score: assessmentResult.frontResult.score,
+        findings: assessmentResult.frontResult.findings || [],
+        class: assessmentResult.frontResult.class
+      } : null,
+      sideResult: assessmentResult.sideResult ? {
+        success: assessmentResult.sideResult.success,
+        score: assessmentResult.sideResult.score,
+        findings: assessmentResult.sideResult.findings || [],
+        class: assessmentResult.sideResult.class
+      } : null,
+      report: assessmentResult.report ? {
+        overall_score: assessmentResult.report.overall_score,
+        combined_findings: assessmentResult.report.combined_findings || [],
+        exercises: assessmentResult.report.exercises || [],
+        symptoms: assessmentResult.report.symptoms || [],
+        recommendations: assessmentResult.report.recommendations || []
+      } : null,
       error_message: assessmentResult.error?.message || null,
       warnings: assessmentResult.warnings || []
     };
+
 
     const response = await fetch(
       `${apiBaseUrl}/assessments`,
@@ -95,15 +136,20 @@ export async function saveAssessment(assessmentResult) {
  * Helper: Format assessment for history display
  */
 export function formatAssessmentForHistory(assessment) {
-  const timestamp = new Date(assessment.timestamp).toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  });
+  const sourceTime = assessment.createdAt || assessment.timestamp;
+  const timestamp = sourceTime
+    ? new Date(sourceTime).toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    })
+    : 'Unknown date';
 
-  const mode = assessment.status === 'partial'
+  const normalizedStatus = String(assessment.status || 'unknown').toLowerCase();
+
+  const mode = normalizedStatus === 'partial'
     ? (assessment.front_score ? 'Front Only' : assessment.side_score ? 'Side Only' : 'Unknown')
     : assessment.front_score && assessment.side_score
     ? 'Front + Side'
@@ -116,7 +162,7 @@ export function formatAssessmentForHistory(assessment) {
     frontScore: assessment.front_score,
     sideScore: assessment.side_score,
     overallScore: assessment.overall_score,
-    status: assessment.status,
+    status: normalizedStatus,
     exercises: assessment.exercises || [],
     findings: [
       ...(assessment.front_findings || []),

@@ -24,7 +24,7 @@ export const LoginView = {
     // Redirect if already logged in
     onMounted(() => {
       if (isAuthenticated()) {
-        router.push('/assess');
+        router.push('/dashboard');
       }
     });
 
@@ -63,9 +63,9 @@ export const LoginView = {
         if (result.success) {
           showStatusToast('Login Successful', `Welcome back, ${result.user.name}!`, 'var(--accent)');
           
-          // Redirect to assess page
+          // Redirect to dashboard
           setTimeout(() => {
-            router.push('/assess');
+            router.push('/dashboard');
           }, 1000);
         } else {
           // Handle backend errors

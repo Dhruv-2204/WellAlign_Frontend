@@ -385,7 +385,6 @@ export const AssessView = {
       errorState.value = null;
       clearFrontImage();
       clearSideImage();
-      reportHistory.value = [];
     }
 
     function dismissError() {
@@ -424,6 +423,75 @@ export const AssessView = {
         'generating_report': { text: 'Generating Report', step: 3, total: 3 }
       };
       return phases[currentPhase.value] || { text: 'Processing...', step: 0, total: 3 };
+    }
+
+    // Helper: Download report as JSON
+    function downloadReport(reportData, filename = 'assessment-report.json') {
+      const dataStr = JSON.stringify(reportData, null, 2);
+      const dataBlob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(dataBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+
+    // Helper: Download report as CSV (for compatibility with spreadsheets)
+    function downloadReportAsCSV(reportData, filename = 'assessment-report.csv') {
+      let csv = 'Assessment Report\n\n';
+      csv += `Generated,${new Date().toLocaleString()}\n\n`;
+      
+      if (reportData.frontResult?.success) {
+        csv += `Front View Score,${reportData.frontResult.score}%\n`;
+        csv += `Front Findings,${(reportData.frontResult.findings || []).join('; ')}\n\n`;
+      }
+      
+      if (reportData.sideResult?.success) {
+        csv += `Side View Score,${reportData.sideResult.score}%\n`;
+        csv += `Side Findings,${(reportData.sideResult.findings || []).join('; ')}\n\n`;
+      }
+      
+      if (reportData.report?.overall_score) {
+        csv += `Overall Score,${reportData.report.overall_score}%\n\n`;
+      }
+      
+      if (reportData.report?.exercises?.length) {
+        csv += 'Recommended Exercises\n';
+        reportData.report.exercises.forEach(ex => {
+          csv += `${ex}\n`;
+        });
+      }
+      
+      const dataBlob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(dataBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+
+    // Helper: Generate filename for current report
+    function getReportFilename(dateStr = null) {
+      const date = dateStr || new Date().toISOString().split('T')[0];
+      return `assessment-${date}.json`;
+    }
+
+    // Helper: Generate filename for report as CSV
+    function getReportCSVFilename(dateStr = null) {
+      const date = dateStr || new Date().toISOString().split('T')[0];
+      return `assessment-${date}.csv`;
+    }
+
+    // Helper: Generate filename from timestamp
+    function getHistoryFilename(timestamp) {
+      const dateNum = timestamp.replace(/[^0-9]/g, '');
+      return `assessment-${dateNum}.json`;
     }
 
     // Resolve backend availability so the UI can explain whether data is local or synced.
@@ -488,6 +556,11 @@ export const AssessView = {
       clearReportAndStartOver,
       dismissError,
       getErrorTitle,
+      downloadReport,
+      downloadReportAsCSV,
+      getReportFilename,
+      getReportCSVFilename,
+      getHistoryFilename,
       hideStatusToast
     };
   },
@@ -500,7 +573,6 @@ export const AssessView = {
             <p class="text-[var(--muted)] text-[0.95rem]">Upload front and side photos to generate an assessment summary.</p>
             <p class="text-[0.75rem] text-[var(--muted)] mt-2">{{ backendStatus }}</p>
           </div>
-          <button class="btn-calibrate min-w-[10rem] mt-0">View History</button>
         </div>
       </app-card>
     </div>
@@ -538,6 +610,7 @@ export const AssessView = {
               <div v-else class="upload-preview-block">
                 <div class="upload-preview-frame">
                   <img :src="frontPreview" class="upload-preview-img" alt="Front posture preview" />
+                  <div class="scanline image-scanline"></div>
                   <div class="upload-silhouette front">
                     <svg viewBox="0 0 64 64" aria-hidden="true">
                       <circle cx="32" cy="13" r="8"></circle>
@@ -585,6 +658,7 @@ export const AssessView = {
               <div v-else class="upload-preview-block">
                 <div class="upload-preview-frame">
                   <img :src="sidePreview" class="upload-preview-img" alt="Side posture preview" />
+                  <div class="scanline image-scanline"></div>
                   <div class="upload-silhouette side">
                     <svg viewBox="0 0 64 64" aria-hidden="true">
                       <circle cx="29" cy="13" r="8"></circle>
@@ -631,7 +705,15 @@ export const AssessView = {
               <h2 class="font-[Syne] text-[1.3rem] font-bold mb-1">Assessment Report</h2>
               <p class="text-[0.8rem] text-[var(--muted)]">{{ report.frontResult?.success || report.sideResult?.success ? 'Analysis Complete' : 'Partial Analysis' }}</p>
             </div>
-            <button class="assess-close-btn" @click="clearReportAndStartOver">Start Over</button>
+            <div class="flex gap-2">
+              <button class="assess-close-btn text-sm" @click="downloadReport(report, getReportFilename())" title="Download as JSON">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </button>
+              <button class="assess-close-btn text-sm" @click="downloadReportAsCSV(report, getReportCSVFilename())" title="Download as CSV">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path d="M12 3v12m0 0l-3-3m3 3l3-3"/></svg>
+              </button>
+              <button class="assess-close-btn" @click="clearReportAndStartOver">Start Over</button>
+            </div>
           </div>
 
           <!-- Warning Banner for Partial Reports -->
@@ -758,8 +840,11 @@ export const AssessView = {
               </div>
               <div class="assess-history-status">
                 <span class="badge" :style="{ backgroundColor: getStatusBadgeColor(item.status), color: '#fff' }">
-                  {{ item.status.toUpperCase() }}
+                  {{ (item.status || 'unknown').toUpperCase() }}
                 </span>
+                <button class="assess-history-download-btn" @click.stop="downloadReport(item.fullData, getHistoryFilename(item.timestamp))" title="Download Report">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                </button>
               </div>
               
               <!-- Expandable Details -->
