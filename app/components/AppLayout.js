@@ -26,9 +26,8 @@ export const AppLayout = {
     const links = [
       { name: 'dashboard', label: 'Dashboard', to: '/dashboard' },
       { name: 'assess', label: 'Assess', to: '/assess' },
-      { name: 'plan', label: 'Plan', to: '/plan' },
+      { name: 'progress', label: 'Progress Hub', to: '/progress' },
       { name: 'monitoring', label: 'Monitoring', to: '/monitoring' },
-      { name: 'progress', label: 'Progress', to: '/progress' },
       { name: 'settings', label: 'Settings', to: '/settings' }
     ];
 
