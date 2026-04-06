@@ -62,11 +62,18 @@ export const LoginView = {
 
         if (result.success) {
           showStatusToast('Login Successful', `Welcome back, ${result.user.name}!`, 'var(--accent)');
+          setTimeout(() => {
+            showStatusToast(
+              'Wellbeing Guidance Notice',
+              'WellAlign provides posture and wellbeing guidance only. Seek medical care for ongoing pain or injuries.',
+              'var(--warn)'
+            );
+          }, 500);
           
           // Redirect to dashboard
           setTimeout(() => {
             router.push('/dashboard');
-          }, 1000);
+          }, 1800);
         } else {
           // Handle backend errors
           const errorMsg = result.message || 'Login failed. Please try again.';

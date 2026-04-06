@@ -1,6 +1,48 @@
 import { checkBackendHealth } from '../services/backendHealth.js';
 import { useStatusToast } from '../utils/useStatusToast.js';
 import { useMonitoringSession } from '../services/monitoringSession.js';
+import { sendGeminiChatMessage, fetchGeminiChatHistory } from '../services/geminiService.js';
+
+const CHAT_VIDEO_CACHE_KEY = 'wa-chat-video-cache';
+
+function normalizeKey(text) {
+  return String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function makeVideoCacheKey(userMessage, botMessage) {
+  return `${normalizeKey(userMessage)}::${normalizeKey(botMessage)}`;
+}
+
+function shouldShowVideosForMessage(userMessage) {
+  const text = normalizeKey(userMessage);
+  if (!text) return false;
+
+  return [
+    'video',
+    'youtube',
+    'link',
+    'exercise',
+    'routine',
+    'stretch',
+    'workout',
+    'demonstration',
+    'tutorial'
+  ].some((keyword) => text.includes(keyword));
+}
+
+function readVideoCache() {
+  try {
+    const raw = localStorage.getItem(CHAT_VIDEO_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveVideoCache(cache) {
+  localStorage.setItem(CHAT_VIDEO_CACHE_KEY, JSON.stringify(cache));
+}
 
 export const DashboardView = {
   setup() {
@@ -15,8 +57,11 @@ export const DashboardView = {
     const monitoringStatus = computed(() => (monitoringState.isMonitoring ? 'ON' : 'OFF'));
     const lastSession = computed(() => monitoringState.lastSession);
     const chatInput = ref('');
-    const nextMsgId = ref(4);
+    const isSendingChat = ref(false);
+    const hasShownChatDisclaimer = ref(false);
+    const nextMsgId = ref(2);
     const backendStatus = ref('Connecting to backend...');
+    const chatVideoCache = ref(readVideoCache());
 
     function formatSessionEndedAt(value) {
       if (!value) return 'N/A';
@@ -37,9 +82,13 @@ export const DashboardView = {
     } = useStatusToast(8000);
 
     const chatMessages = ref([
-      { id: 1, type: 'bot', text: 'How can I help you improve your posture today?' },
-      { id: 2, type: 'user', text: 'Why does my lower back hurt after 1 hour?' },
-      { id: 3, type: 'bot', text: 'That usually indicates a lack of lumbar support or pelvic tilt. Try adjusting your chair backrest and ensure your hips are slightly higher than your knees.' }
+      {
+        id: 1,
+        type: 'bot',
+        text: 'I am your posture assistant. Ask for quick posture tips, desk setup help, or exercise suggestions.',
+        youtubeVideos: [],
+        source: 'system'
+      }
     ]);
 
     const recentSessions = ref([
@@ -75,30 +124,115 @@ export const DashboardView = {
       }
     }
 
-    function sendMessage() {
+    async function loadChatHistory() {
+      try {
+        const history = await fetchGeminiChatHistory({ limit: 20, skip: 0 });
+        if (!history.length) {
+          nextMsgId.value = chatMessages.value.length + 1;
+          return;
+        }
+
+        const replay = [];
+        let previousUserMessage = '';
+        history
+          .slice()
+          .reverse()
+          .forEach((item) => {
+            if (item.userMessage) {
+              previousUserMessage = item.userMessage;
+              replay.push({
+                id: nextMsgId.value++,
+                type: 'user',
+                text: item.userMessage,
+                youtubeVideos: []
+              });
+            }
+
+            if (item.response) {
+              const key = makeVideoCacheKey(previousUserMessage, item.response);
+              const cachedVideos = shouldShowVideosForMessage(previousUserMessage)
+                ? (chatVideoCache.value[key] || [])
+                : [];
+              replay.push({
+                id: nextMsgId.value++,
+                type: 'bot',
+                text: item.response,
+                youtubeVideos: cachedVideos,
+                source: 'history'
+              });
+            }
+          });
+
+        chatMessages.value = [chatMessages.value[0], ...replay].slice(-30);
+      } catch (error) {
+        console.error('Failed to load chat history:', error);
+      }
+    }
+
+    async function sendMessage() {
       const msg = chatInput.value.trim();
-      if (!msg) return;
+      if (!msg || isSendingChat.value) return;
+
+      if (!hasShownChatDisclaimer.value) {
+        showStatusToast(
+          'Wellbeing Guidance Notice',
+          'AI guidance supports posture and wellbeing only. Seek medical care for persistent pain or injury symptoms.',
+          'var(--warn)'
+        );
+        hasShownChatDisclaimer.value = true;
+      }
 
       chatMessages.value.push({ id: nextMsgId.value++, type: 'user', text: msg });
       chatInput.value = '';
+      isSendingChat.value = true;
 
       nextTick(() => {
         const wrap = document.getElementById('chatWrap');
         if (wrap) wrap.scrollTop = wrap.scrollHeight;
       });
 
-      setTimeout(() => {
+      try {
+        const response = await sendGeminiChatMessage(msg);
+        const allowVideos = shouldShowVideosForMessage(msg);
+        const videos = allowVideos ? (response.youtubeVideos || []) : [];
+
         chatMessages.value.push({
           id: nextMsgId.value++,
           type: 'bot',
-          text: 'Based on your current posture data, focus on deep neck flexors and thoracic mobility today. I can add a target routine if you want.'
+          text: response.response || 'I could not generate a reply. Please try again.',
+          youtubeVideos: videos,
+          source: response.source || 'unknown'
         });
+
+        const key = makeVideoCacheKey(msg, response.response);
+        if (key && videos.length) {
+          chatVideoCache.value[key] = videos.slice(0, 3);
+          saveVideoCache(chatVideoCache.value);
+        }
+      } catch (error) {
+        console.error('Chat send failed:', error);
+        chatMessages.value.push({
+          id: nextMsgId.value++,
+          type: 'bot',
+          text: 'I could not reach AI services right now. Please try again in a moment.',
+          youtubeVideos: [],
+          source: 'error'
+        });
+      } finally {
+        isSendingChat.value = false;
 
         nextTick(() => {
           const wrap = document.getElementById('chatWrap');
           if (wrap) wrap.scrollTop = wrap.scrollHeight;
         });
-      }, 700);
+      }
+    }
+
+    function handleChatInputKeydown(event) {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
     }
 
     function initChart() {
@@ -172,6 +306,7 @@ export const DashboardView = {
         unavailableMessage: 'Backend unavailable; showing local dashboard data',
         countSuffix: 'records fetched'
       });
+      await loadChatHistory();
       showStatusToast('Slouch Detected', 'You have been leaning forward for 15 minutes. Straighten up and take a short break.', 'var(--warn)');
       nextTick(() => initChart());
     });
@@ -187,6 +322,7 @@ export const DashboardView = {
       monitoringStatus,
       lastSession,
       chatInput,
+      isSendingChat,
       chatMessages,
       showToast,
       toastTitle,
@@ -197,6 +333,7 @@ export const DashboardView = {
       endSession,
       hideStatusToast,
       sendMessage,
+      handleChatInputKeydown,
       formatSessionEndedAt,
       goToMonitoring
     };
@@ -304,20 +441,50 @@ export const DashboardView = {
       </div>
 
       <div class="right-col">
-        <div class="card delay-[300ms] flex-1">
+        <div class="card delay-[300ms] flex-1 min-h-[34rem]">
           <div class="section-header">
             <div class="section-title">Well AI Assistant</div>
           </div>
 
-          <div class="chat-wrap" id="chatWrap">
+          <div class="mb-3 p-3 text-[0.78rem] rounded-lg border border-[var(--warn)] bg-[rgba(249,115,22,0.08)] text-[var(--muted)]">
+            AI tips are for posture and wellbeing support only, not medical diagnosis or treatment.
+          </div>
+
+          <div class="chat-wrap chat-wrap-large" id="chatWrap">
             <div v-for="msg in chatMessages" :key="msg.id" :class="['chat-bubble', msg.type]">
-              {{ msg.text }}
+              <div>{{ msg.text }}</div>
+              <div v-if="msg.type === 'bot' && msg.source" class="chat-source-chip" :class="msg.source === 'gemini' ? 'live' : 'fallback'">
+                {{ msg.source === 'gemini' ? 'Live AI' : 'Fallback' }}
+              </div>
+              <div v-if="msg.youtubeVideos && msg.youtubeVideos.length" class="mt-2 flex flex-col gap-1 text-[0.78rem]">
+                <a
+                  v-for="video in msg.youtubeVideos.slice(0, 3)"
+                  :key="video.videoId || video.url"
+                  :href="video.url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="underline text-[var(--accent2)]"
+                >
+                  {{ video.title }}
+                </a>
+              </div>
             </div>
           </div>
 
           <div class="chat-input-wrap">
-            <input v-model="chatInput" class="chat-input" placeholder="Ask a question..." @keydown.enter="sendMessage" />
-            <button class="chat-send" @click="sendMessage">Send</button>
+            <textarea
+              v-model="chatInput"
+              class="chat-input chat-input-large"
+              placeholder="Ask Well AI about posture, exercises, desk setup, or wellbeing tips..."
+              @keydown="handleChatInputKeydown"
+              :disabled="isSendingChat"
+            ></textarea>
+            <button class="chat-send chat-send-large" @click="sendMessage" :disabled="isSendingChat">
+              <span>{{ isSendingChat ? 'Sending' : 'Send' }}</span>
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4">
+                <path stroke-linecap="round" stroke-linejoin="round" d="m5 12 14-7-3 7 3 7-14-7Z"/>
+              </svg>
+            </button>
           </div>
         </div>
 

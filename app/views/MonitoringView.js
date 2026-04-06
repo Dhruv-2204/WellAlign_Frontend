@@ -4,6 +4,9 @@ import { startRecordingSession, recordPostureSnapshot, endRecordingSession, getS
 import { analyzePosture, resetPostureTracking, getHoldDuration } from '../services/postureAnalysis.js';
 import { generateDetailedReport } from '../services/postureAdvice.js';
 import { PostureReport } from '../components/PostureReport.js';
+import { api } from '../services/api.js';
+import { analyzeMonitoringSessionWithGemini } from '../services/geminiService.js';
+import { enrichSearchesWithVideos } from '../services/youtubeService.js';
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -176,6 +179,8 @@ export const MonitoringView = {
     // Post-Session Report
     const generatedReport = ref(null);
     const previousSessionReports = ref([]);
+    const geminiSessionAnalysis = ref(null);
+    const geminiVideoGroups = ref([]);
     
     // Status and Toast
     const {
@@ -195,6 +200,42 @@ export const MonitoringView = {
     const sessionLabel = computed(() => Number.isFinite(selectedDuration.value)
       ? `${selectedDuration.value} minute timed session`
       : 'Unlimited session (manual stop)');
+
+    function unwrapData(response) {
+      if (!response || typeof response !== 'object') return response;
+      if (response.success && response.data !== undefined) return response.data;
+      return response.data !== undefined ? response.data : response;
+    }
+
+    async function persistAndAnalyzeSession(finalSession, report) {
+      if (!finalSession || !report) return;
+
+      const startedAt = finalSession.startTime
+        ? new Date(finalSession.startTime).toISOString()
+        : new Date().toISOString();
+      const endedAt = finalSession.endTime
+        ? new Date(finalSession.endTime).toISOString()
+        : new Date().toISOString();
+      const alertKeys = Object.keys(finalSession.summary?.issueFlags || {});
+
+      const created = await api.monitoringSessions.create({
+        startedAt,
+        endedAt,
+        durationSec: Number(finalSession.duration) || 0,
+        score: Number(report.overallScore) || 0,
+        alerts: alertKeys
+      });
+
+      const savedSession = unwrapData(created) || {};
+      const sessionId = savedSession._id || null;
+      if (!sessionId) return;
+
+      const geminiResult = await analyzeMonitoringSessionWithGemini(sessionId);
+      const videoGroups = await enrichSearchesWithVideos(geminiResult.youtubeSearches || [], 3);
+
+      geminiSessionAnalysis.value = geminiResult;
+      geminiVideoGroups.value = videoGroups;
+    }
 
     // ========== SESSION SETUP ==========
     function startSession() {
@@ -373,6 +414,15 @@ export const MonitoringView = {
             .slice(1)
             .map((session) => ({ report: generateDetailedReport(session) }))
             .filter((item) => item.report && item.report.status === 'SUCCESS');
+
+          persistAndAnalyzeSession(finalSession, report)
+            .then(() => {
+              showStatusToast('AI Session Review Ready', 'Gemini validated your session and generated guidance.', 'var(--accent)');
+            })
+            .catch((err) => {
+              console.error('Failed to persist/analyze session:', err);
+              showStatusToast('AI Session Review Unavailable', 'Session report is ready, but AI review is currently unavailable.', 'var(--warn)');
+            });
           
           isLoading.value = false;
           hideStatusToast();
@@ -459,6 +509,8 @@ ${generatedReport.value.healthRiskAssessment}
       viewMode.value = 'setup';
       isSessionActive.value = false;
       generatedReport.value = null;
+      geminiSessionAnalysis.value = null;
+      geminiVideoGroups.value = [];
       detectedIssues.value = [];
       timedSessionTotalSeconds.value = Number.isFinite(selectedDuration.value) ? selectedDuration.value * 60 : null;
       currentSession = null;
@@ -534,6 +586,8 @@ ${generatedReport.value.healthRiskAssessment}
       // Report
       generatedReport,
       previousSessionReports,
+      geminiSessionAnalysis,
+      geminiVideoGroups,
       
       // Toast
       showToast,
@@ -739,6 +793,7 @@ ${generatedReport.value.healthRiskAssessment}
           <div class="text-center mb-8">
             <h2 class="font-[Syne] text-[2rem] font-extrabold mb-2">Your Posture Report</h2>
             <p class="text-[var(--muted)]">Session completed — {{ sessionElapsedTime }} of monitoring</p>
+            <p class="text-[0.75rem] text-[var(--muted)] mt-2">Wellbeing guidance only. Seek clinical care for persistent pain or injury concerns.</p>
           </div>
 
           <PostureReport 
@@ -749,6 +804,40 @@ ${generatedReport.value.healthRiskAssessment}
             @start-new-session="startNewSession"
             @go-to-dashboard="goToDashboard"
           />
+
+          <div v-if="geminiSessionAnalysis" class="mt-6 p-5 bg-[var(--surface2)] rounded-xl border border-[var(--border)]">
+            <h3 class="font-semibold text-[1.05rem] mb-2">Gemini Session Validation</h3>
+            <p class="text-[0.9rem] text-[var(--muted)] mb-2">{{ geminiSessionAnalysis.analysis || 'AI session analysis unavailable.' }}</p>
+            <p v-if="geminiSessionAnalysis.confirmedScore !== null" class="text-[0.85rem] text-[var(--accent)] mb-3">
+              Confirmed session score: {{ geminiSessionAnalysis.confirmedScore }}%
+            </p>
+
+            <div v-if="geminiSessionAnalysis.recommendedExercises && geminiSessionAnalysis.recommendedExercises.length" class="mb-4">
+              <h4 class="font-semibold text-[0.9rem] mb-2">Corrective Exercises</h4>
+              <ul class="space-y-1 text-[0.85rem]">
+                <li v-for="exercise in geminiSessionAnalysis.recommendedExercises.slice(0, 5)" :key="exercise" class="text-[var(--muted)]">• {{ exercise }}</li>
+              </ul>
+            </div>
+
+            <div v-if="geminiVideoGroups.length" class="space-y-3">
+              <div v-for="group in geminiVideoGroups.slice(0, 3)" :key="group.query" class="p-3 bg-[var(--surface)] rounded-lg border border-[var(--border)]">
+                <div class="text-[0.8rem] font-semibold mb-1">Search: {{ group.query }}</div>
+                <div v-if="group.reason" class="text-[0.75rem] text-[var(--muted)] mb-2">{{ group.reason }}</div>
+                <div class="flex flex-col gap-1 text-[0.8rem]">
+                  <a
+                    v-for="video in group.videos.slice(0, 3)"
+                    :key="video.videoId || video.url"
+                    :href="video.url"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="underline text-[var(--accent2)]"
+                  >
+                    {{ video.title }}
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
         </app-card>
       </div>
     </div>

@@ -3,6 +3,8 @@ import { checkBackendHealth } from '../services/backendHealth.js';
 import { submitAssessment as submitAssessmentAPI } from '../services/assessment.js';
 import { fetchAssessmentHistory, saveAssessment, formatAssessmentForHistory } from '../services/assessmentHistory.js';
 import { useStatusToast } from '../utils/useStatusToast.js';
+import { analyzeAssessmentWithGemini } from '../services/geminiService.js';
+import { enrichSearchesWithVideos } from '../services/youtubeService.js';
 
 export const AssessView = {
   setup() {
@@ -32,6 +34,7 @@ export const AssessView = {
     const isProcessing = ref(false);
     const currentPhase = ref(null); // "analyzing_front" | "analyzing_side" | "generating_report"
     const report = ref(null);
+    const geminiAssessment = ref(null);
     const reportHistory = ref([]);
     const selectedHistoryItem = ref(null); // For expandable history details
     const errorState = ref(null); // { type: 'landmark_error' | 'timeout' | 'partial' | 'failed', message, image }
@@ -246,7 +249,11 @@ export const AssessView = {
           
           // Save to backend
           try {
-            await saveAssessment(result);
+            const saved = await saveAssessment(result);
+            const assessmentId = saved?.data?._id || saved?._id || null;
+            if (assessmentId) {
+              await runGeminiAssessmentAnalysis(assessmentId);
+            }
             // Refresh history from backend
             await loadAssessmentHistory();
           } catch (saveError) {
@@ -265,7 +272,11 @@ export const AssessView = {
           
           // Still try to save partial result
           try {
-            await saveAssessment(result);
+            const saved = await saveAssessment(result);
+            const assessmentId = saved?.data?._id || saved?._id || null;
+            if (assessmentId) {
+              await runGeminiAssessmentAnalysis(assessmentId);
+            }
             await loadAssessmentHistory();
           } catch (saveError) {
             console.error('Failed to save partial assessment:', saveError);
@@ -382,6 +393,7 @@ export const AssessView = {
 
     function clearReportAndStartOver() {
       report.value = null;
+      geminiAssessment.value = null;
       errorState.value = null;
       clearFrontImage();
       clearSideImage();
@@ -398,6 +410,27 @@ export const AssessView = {
       if (type === 'timeout') return 'Analysis Timeout';
       if (type === 'both_failed') return 'Assessment Failed';
       return 'Error';
+    }
+
+    async function runGeminiAssessmentAnalysis(assessmentId) {
+      if (!assessmentId) return;
+
+      try {
+        const geminiResult = await analyzeAssessmentWithGemini(assessmentId);
+        const youtubeGroups = await enrichSearchesWithVideos(geminiResult.youtubeSearches || [], 3);
+
+        geminiAssessment.value = {
+          analysis: geminiResult.analysis,
+          confirmedScore: geminiResult.confirmedScore,
+          youtubeSearches: geminiResult.youtubeSearches || [],
+          youtubeGroups
+        };
+
+        showStatusToast('AI Review Ready', 'Gemini confirmed your assessment and generated guidance.', 'var(--accent)');
+      } catch (error) {
+        console.error('Gemini assessment analysis failed:', error);
+        showStatusToast('AI Review Unavailable', 'Assessment is saved, but AI review could not be loaded now.', 'var(--warn)');
+      }
     }
 
     // Helper: Get phase display text and step number
@@ -523,6 +556,7 @@ export const AssessView = {
       isProcessing,
       currentPhase,
       report,
+      geminiAssessment,
       reportHistory,
       selectedHistoryItem,
       isLoadingHistory,
@@ -556,6 +590,7 @@ export const AssessView = {
       clearReportAndStartOver,
       dismissError,
       getErrorTitle,
+      runGeminiAssessmentAnalysis,
       downloadReport,
       downloadReportAsCSV,
       getReportFilename,
@@ -704,6 +739,7 @@ export const AssessView = {
             <div>
               <h2 class="font-[Syne] text-[1.3rem] font-bold mb-1">Assessment Report</h2>
               <p class="text-[0.8rem] text-[var(--muted)]">{{ report.frontResult?.success || report.sideResult?.success ? 'Analysis Complete' : 'Partial Analysis' }}</p>
+              <p class="text-[0.75rem] text-[var(--muted)] mt-1">Wellbeing guidance only. For persistent pain, seek a licensed clinician.</p>
             </div>
             <div class="flex gap-2">
               <button class="assess-close-btn text-sm" @click="downloadReport(report, getReportFilename())" title="Download as JSON">
@@ -767,6 +803,33 @@ export const AssessView = {
                 <span>{{ exercise }}</span>
               </li>
             </ul>
+          </div>
+
+          <div v-if="geminiAssessment" class="assess-exercises mt-4">
+            <h3 class="font-semibold mb-2">Gemini Validation</h3>
+            <p class="text-[0.9rem] text-[var(--muted)] mb-2">{{ geminiAssessment.analysis || 'AI review unavailable.' }}</p>
+            <p v-if="geminiAssessment.confirmedScore !== null" class="text-[0.85rem] text-[var(--accent)] mb-3">
+              Confirmed overall score: {{ geminiAssessment.confirmedScore }}%
+            </p>
+
+            <div v-if="geminiAssessment.youtubeGroups && geminiAssessment.youtubeGroups.length" class="space-y-3">
+              <div v-for="group in geminiAssessment.youtubeGroups.slice(0, 3)" :key="group.query" class="p-3 bg-[var(--surface2)] rounded-lg border border-[var(--border)]">
+                <div class="text-[0.8rem] font-semibold mb-1">Search: {{ group.query }}</div>
+                <div v-if="group.reason" class="text-[0.75rem] text-[var(--muted)] mb-2">{{ group.reason }}</div>
+                <div class="flex flex-col gap-1 text-[0.8rem]">
+                  <a
+                    v-for="video in group.videos.slice(0, 3)"
+                    :key="video.videoId || video.url"
+                    :href="video.url"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="underline text-[var(--accent2)]"
+                  >
+                    {{ video.title }}
+                  </a>
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- Retry Buttons for Partial Reports -->
@@ -864,6 +927,10 @@ export const AssessView = {
                       • {{ finding }}
                     </li>
                   </ul>
+                </div>
+                <div v-if="item.fullData?.gemini_analysis" class="mt-3">
+                  <p class="font-semibold text-[0.9rem] mb-2">AI Validation</p>
+                  <p class="text-[0.85rem] text-[var(--muted)]">{{ item.fullData.gemini_analysis }}</p>
                 </div>
               </div>
             </div>
