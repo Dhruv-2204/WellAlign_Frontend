@@ -2,6 +2,7 @@ import { checkBackendHealth } from '../services/backendHealth.js';
 import { useStatusToast } from '../utils/useStatusToast.js';
 import { useMonitoringSession } from '../services/monitoringSession.js';
 import { sendGeminiChatMessage, fetchGeminiChatHistory } from '../services/geminiService.js';
+import { useAuth } from '../services/auth.js';
 
 const CHAT_VIDEO_CACHE_KEY = 'wa-chat-video-cache';
 
@@ -56,6 +57,12 @@ export const DashboardView = {
     const monitoringState = useMonitoringSession();
     const monitoringStatus = computed(() => (monitoringState.isMonitoring ? 'ON' : 'OFF'));
     const lastSession = computed(() => monitoringState.lastSession);
+    const authState = useAuth();
+    const userFirstName = computed(() => {
+      const name = authState.user?.name || '';
+      const firstName = String(name).split(' ')[0].trim();
+      return firstName || 'User';
+    });
     const chatInput = ref('');
     const isSendingChat = ref(false);
     const hasShownChatDisclaimer = ref(false);
@@ -335,7 +342,8 @@ export const DashboardView = {
       sendMessage,
       handleChatInputKeydown,
       formatSessionEndedAt,
-      goToMonitoring
+      goToMonitoring,
+      userFirstName
     };
   },
   template: `
@@ -343,7 +351,7 @@ export const DashboardView = {
       <app-card>
         <div class="flex items-center justify-between">
           <div>
-            <h1 class="font-[Syne] text-[2.4rem] font-extrabold mb-2">Welcome back, Drew</h1>
+            <h1 class="font-[Syne] text-[2.4rem] font-extrabold mb-2">Welcome back, {{ userFirstName }}</h1>
             <p class="text-[var(--muted)] text-base">Track your posture journey and maintain healthy habits</p>
             <p class="text-[0.75rem] text-[var(--muted)] mt-2">{{ backendStatus }}</p>
           </div>

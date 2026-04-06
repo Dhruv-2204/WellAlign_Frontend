@@ -386,7 +386,70 @@ const ADVICE_LIBRARY = {
       'Use anti-fatigue monitor glasses if you spend long hours at screen',
       'Take frequent breaks to refocus eyes on distant objects'
     ]
+  },
+
+  SCREEN_TOO_CLOSE: {
+    title: 'Screen Too Close',
+    shortDescription: 'You are sitting too close to the screen',
+    fullDescription: 'You are consistently too close to your display. This can increase eye strain, neck tension, and encourage forward-leaning posture over time.',
+
+    severity: {
+      low: { threshold: 12, label: 'Minimal', color: 'green' },
+      medium: { threshold: 30, label: 'Moderate', color: 'yellow' },
+      high: { threshold: 100, label: 'Severe', color: 'red' }
+    },
+
+    healthImpact: [
+      'Digital eye strain and blurred vision',
+      'Increased neck and upper-back tension',
+      'Forward-leaning posture habit formation',
+      'Headaches and reduced visual comfort'
+    ],
+
+    immediateActions: [
+      'Move back so the screen is at arm\'s length',
+      'Increase text size instead of leaning in',
+      'Center your screen directly in front of you',
+      'Relax shoulders and bring your head back over shoulders'
+    ],
+
+    dailyExercises: [
+      {
+        name: 'Seated Chin Tuck',
+        reps: '10 reps, 2 sets',
+        description: 'Gently retract chin without tilting head down. Hold 2 seconds each rep.',
+        frequency: '2-3 times daily'
+      },
+      {
+        name: 'Thoracic Extension Reset',
+        reps: '8-10 reps',
+        description: 'Sit tall and extend upper back while opening chest, then relax.',
+        frequency: 'Daily'
+      }
+    ],
+
+    exerciseLinks: [
+      { title: 'Desk Posture & Screen Distance Setup', url: 'https://www.youtube.com/results?search_query=desk+ergonomics+screen+distance' },
+      { title: 'Eye Strain Relief Routine', url: 'https://www.youtube.com/results?search_query=digital+eye+strain+exercises' }
+    ],
+
+    workstationSetup: [
+      'Keep monitor roughly an arm\'s length away',
+      'Place top of monitor at or slightly below eye level',
+      'Use browser zoom and larger font sizes',
+      'Reduce glare and adjust brightness to room lighting'
+    ],
+
+    advice: [
+      'Use larger on-screen text to avoid leaning forward',
+      'Set reminders to do a quick posture reset every 30 minutes',
+      'Practice the 20-20-20 eye break rule throughout work sessions'
+    ]
   }
+};
+
+const ISSUE_KEY_ALIASES = {
+  FORWARD_HEAD_POSTURE: 'FORWARD_HEAD'
 };
 
 // --------- Report Generation ----------
@@ -521,9 +584,12 @@ function analyzeDetectedIssues(session) {
     const issue = issues[key];
     issue.avgSeverity = Math.round(issue.totalSeverity / issue.count);
     issue.percentage = total > 0 ? Math.round((issue.count / total) * 100) : 0;
-    
-    // Get advice from library
-    const advice = ADVICE_LIBRARY[key];
+
+    // Normalize runtime issue keys to advice-library keys where needed.
+    const normalizedKey = ISSUE_KEY_ALIASES[key] || key;
+
+    // Get advice from library.
+    const advice = ADVICE_LIBRARY[normalizedKey];
     if (advice) {
       issue.title = advice.title;
       issue.description = advice.fullDescription;
@@ -534,7 +600,23 @@ function analyzeDetectedIssues(session) {
       issue.dailyExercises = advice.dailyExercises;
       issue.workstationSetup = advice.workstationSetup;
       issue.exerciseLinks = advice.exerciseLinks;
+      return;
     }
+
+    // Graceful fallback to avoid blank report cards for unknown issue keys.
+    issue.title = key.replace(/_/g, ' ').toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase());
+    issue.description = 'Posture deviation detected during the monitoring session.';
+    issue.severity = determineSeverityLevel(issue.percentage, {
+      low: { threshold: 15, label: 'Minimal', color: 'green' },
+      medium: { threshold: 35, label: 'Moderate', color: 'yellow' },
+      high: { threshold: 100, label: 'Severe', color: 'red' }
+    });
+    issue.healthImpact = [];
+    issue.immediateActions = [];
+    issue.advice = [];
+    issue.dailyExercises = [];
+    issue.workstationSetup = [];
+    issue.exerciseLinks = [];
   });
 
   return issues;
@@ -732,10 +814,13 @@ function generateRecommendationSummary(issueAnalysis) {
   }
 
   if (issues.length === 1) {
-    return `Focus on addressing ${issues[0].title.toLowerCase()}.`;
+    const title = issues[0].title || 'Posture issue';
+    return `Focus on addressing ${title.toLowerCase()}.`;
   }
 
-  return `Priority: ${issues[0].title.toLowerCase()} and ${issues[1].title.toLowerCase()}.`;
+  const title1 = issues[0].title || 'First issue';
+  const title2 = issues[1].title || 'second issue';
+  return `Priority: ${title1.toLowerCase()} and ${title2.toLowerCase()}.`
 }
 
 // --------- Utility Functions ----------

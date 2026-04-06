@@ -47,7 +47,9 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Request failed: ${response.status}`);
+    const error = new Error(text || `Request failed: ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -56,6 +58,26 @@ async function request(path, options = {}) {
   }
 
   return response.text();
+}
+
+async function requestWithFallback(paths, optionsFactory) {
+  let lastError = null;
+
+  for (const path of paths) {
+    try {
+      const options = typeof optionsFactory === 'function' ? optionsFactory(path) : optionsFactory;
+      return await request(path, options);
+    } catch (err) {
+      lastError = err;
+      // Continue probing only when route does not exist.
+      if (err && err.status === 404) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError || new Error('No compatible endpoint found');
 }
 
 export const api = {
@@ -133,6 +155,54 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(payload)
       });
+    }
+  },
+
+  account: {
+    getMe() {
+      return requestWithFallback(
+        ['/auth/me', '/users/me', '/users/profile', '/auth/profile'],
+        { method: 'GET' }
+      );
+    },
+    updateProfile(payload) {
+      return requestWithFallback(
+        ['/auth/me', '/users/me', '/users/profile', '/auth/profile'],
+        (path) => ({
+          method: path.includes('/profile') ? 'PATCH' : 'PUT',
+          body: JSON.stringify(payload)
+        })
+      );
+    },
+    getSettings() {
+      return requestWithFallback(
+        ['/settings', '/users/settings', '/auth/settings'],
+        { method: 'GET' }
+      );
+    },
+    updateSettings(payload) {
+      return requestWithFallback(
+        ['/settings', '/users/settings', '/auth/settings'],
+        (path) => ({
+          method: path.includes('/settings') ? 'PUT' : 'PATCH',
+          body: JSON.stringify(payload)
+        })
+      );
+    },
+    changePassword(oldPassword, newPassword) {
+      return requestWithFallback(
+        ['/auth/change-password', '/users/change-password', '/auth/password', '/users/password'],
+        (path) => ({
+          method: path.includes('change-password') ? 'POST' : 'PATCH',
+          body: JSON.stringify({ oldPassword, newPassword })
+        })
+      );
+    },
+    deleteAccount() {
+      return requestWithFallback(
+        ['/auth/me', '/users/me', '/users/profile', '/auth/profile'],
+        { method: 'DELETE' }
+      );
     }
   }
 };

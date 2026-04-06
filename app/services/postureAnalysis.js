@@ -420,7 +420,7 @@ export function analyzePosture(landmarks) {
   
   if (forwardHeadFlagged) {
     flaggedIssues.push({
-      type: 'FORWARD_HEAD',
+      type: 'FORWARD_HEAD_POSTURE',
       severity: forwardHead.severity,
       value: forwardHead.value.toFixed(2)
     });
@@ -520,7 +520,7 @@ export function analyzePostureSnapshot(landmarks) {
 
   if (forwardHead.detected) {
     flaggedIssues.push({
-      type: 'FORWARD_HEAD',
+      type: 'FORWARD_HEAD_POSTURE',
       severity: forwardHead.severity,
       value: forwardHead.value.toFixed(2)
     });

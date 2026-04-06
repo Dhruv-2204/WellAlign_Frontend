@@ -1,11 +1,20 @@
 // Settings page: account, monitoring preferences, privacy, and system controls.
 import { useStatusToast } from '../utils/useStatusToast.js';
 import { checkBackendHealth } from '../services/backendHealth.js';
+import { api } from '../services/api.js';
+import { useAuth, logout, updateAuthUser } from '../services/auth.js';
 
 export const SettingsView = {
   setup() {
     const { reactive, watch, ref, onMounted } = Vue;
+    const auth = useAuth();
     const backendStatus = ref('Checking sync status...');
+    const isSaving = ref(false);
+    const isChangingPassword = ref(false);
+    const isDeletingAccount = ref(false);
+    const suppressAutoSave = ref(false);
+    let saveTimer = null;
+
     const {
       showToast,
       toastTitle,
@@ -15,23 +24,184 @@ export const SettingsView = {
     } = useStatusToast(3000);
 
     const settings = reactive({
-      fullName: 'Drew',
-      email: 'drew@example.com',
+      fullName: '',
+      email: '',
       autoStart: true,
       alerts: true,
       sound: false,
       sensitivity: 'normal',
       frequency: 'normal',
       analytics: true,
-      cameraPrivacy: true,
-      autoUpdate: true
+      cameraPrivacy: true
     });
 
-    // Any preference change triggers a lightweight "saved" confirmation toast.
+    const passwordForm = reactive({
+      oldPassword: '',
+      newPassword: '',
+      confirmNewPassword: ''
+    });
+
+    function unwrapData(response) {
+      if (!response || typeof response !== 'object') return response;
+      if (response.success && response.data !== undefined) return response.data;
+      return response.data !== undefined ? response.data : response;
+    }
+
+    async function loadSettings() {
+      try {
+        let me = {};
+        try {
+          const meResponse = await api.account.getMe();
+          me = unwrapData(meResponse) || {};
+        } catch (meErr) {
+          // Fallback to auth state when profile endpoint is unavailable.
+          me = auth.user || {};
+        }
+
+        suppressAutoSave.value = true;
+        settings.fullName = me.name || auth.user?.name || 'User';
+        settings.email = me.email || auth.user?.email || '';
+
+        try {
+          const prefResponse = await api.account.getSettings();
+          const pref = unwrapData(prefResponse) || {};
+          settings.autoStart = pref.autoStart ?? settings.autoStart;
+          settings.alerts = pref.alerts ?? settings.alerts;
+          settings.sound = pref.sound ?? settings.sound;
+          settings.sensitivity = pref.sensitivity || settings.sensitivity;
+          settings.frequency = pref.frequency || settings.frequency;
+          settings.analytics = pref.analytics ?? settings.analytics;
+          settings.cameraPrivacy = pref.cameraPrivacy ?? settings.cameraPrivacy;
+        } catch (prefErr) {
+          // Keep defaults if settings endpoint is unavailable.
+          console.warn('Settings endpoint unavailable, using defaults:', prefErr);
+        }
+      } catch (err) {
+        showStatusToast('Load Failed', 'Unable to load settings from backend.');
+      } finally {
+        setTimeout(() => {
+          suppressAutoSave.value = false;
+        }, 0);
+      }
+    }
+
+    async function persistSettings() {
+      if (isSaving.value) return;
+      isSaving.value = true;
+      try {
+        const profilePayload = {
+          name: settings.fullName,
+          email: settings.email
+        };
+        let profileSaved = false;
+        let preferencesSaved = false;
+
+        try {
+          await api.account.updateProfile(profilePayload);
+          updateAuthUser({ name: settings.fullName, email: settings.email });
+          profileSaved = true;
+        } catch (profileErr) {
+          // Keep going so preference save can still succeed.
+          profileSaved = false;
+        }
+
+        try {
+          await api.account.updateSettings({
+            autoStart: settings.autoStart,
+            alerts: settings.alerts,
+            sound: settings.sound,
+            sensitivity: settings.sensitivity,
+            frequency: settings.frequency,
+            analytics: settings.analytics,
+            cameraPrivacy: settings.cameraPrivacy
+          });
+          preferencesSaved = true;
+        } catch (prefErr) {
+          preferencesSaved = false;
+        }
+
+        if (profileSaved || preferencesSaved) {
+          showStatusToast('Settings Saved', 'Your preferences have been updated successfully.');
+        } else {
+          showStatusToast('Save Failed', 'Backend routes for settings/profile are not available.');
+        }
+      } catch (err) {
+        showStatusToast('Save Failed', 'Could not save settings to backend.');
+      } finally {
+        isSaving.value = false;
+      }
+    }
+
+    async function changePassword() {
+      const oldPassword = String(passwordForm.oldPassword || '').trim();
+      const newPassword = String(passwordForm.newPassword || '').trim();
+      const confirmPassword = String(passwordForm.confirmNewPassword || '').trim();
+
+      if (!oldPassword || !newPassword || !confirmPassword) {
+        showStatusToast('Missing Fields', 'Enter your current and new password.');
+        return;
+      }
+      if (newPassword.length < 8) {
+        showStatusToast('Weak Password', 'New password must be at least 8 characters.');
+        return;
+      }
+      if (newPassword !== confirmPassword) {
+        showStatusToast('Mismatch', 'New password and confirmation do not match.');
+        return;
+      }
+
+      isChangingPassword.value = true;
+      try {
+        await api.account.changePassword(oldPassword, newPassword);
+        passwordForm.oldPassword = '';
+        passwordForm.newPassword = '';
+        passwordForm.confirmNewPassword = '';
+        showStatusToast('Password Updated', 'Your password has been changed.');
+      } catch (err) {
+        if (err?.status === 404) {
+          showStatusToast('Password Change Unavailable', 'Backend does not expose a password-change route yet.');
+        } else {
+          showStatusToast('Password Change Failed', 'Current password may be incorrect.');
+        }
+      } finally {
+        isChangingPassword.value = false;
+      }
+    }
+
+    async function deleteAccount() {
+      const confirmed = window.confirm('This will permanently delete your account and data. Continue?');
+      if (!confirmed) return;
+
+      isDeletingAccount.value = true;
+      try {
+        await api.account.deleteAccount();
+        logout();
+        showStatusToast('Account Deleted', 'Your account has been removed.');
+        setTimeout(() => {
+          window.location.hash = '#/login';
+        }, 350);
+      } catch (err) {
+        if (err?.status === 404) {
+          showStatusToast('Delete Unavailable', 'Backend does not expose an account-delete route yet.');
+        } else {
+          showStatusToast('Delete Failed', 'Unable to delete account at this time.');
+        }
+      } finally {
+        isDeletingAccount.value = false;
+      }
+    }
+
+    // Debounced backend save for any settings/profile changes.
     watch(
       settings,
       () => {
-        showStatusToast('Settings Saved', 'Your preferences have been updated successfully.');
+        if (suppressAutoSave.value) return;
+        if (saveTimer) {
+          clearTimeout(saveTimer);
+        }
+        saveTimer = setTimeout(() => {
+          persistSettings();
+        }, 450);
       },
       { deep: true }
     );
@@ -42,14 +212,22 @@ export const SettingsView = {
         successMessage: 'Settings profile synced',
         unavailableMessage: 'Settings are saved locally (backend unavailable)'
       });
+
+      await loadSettings();
     });
 
     return {
       backendStatus,
       settings,
+      passwordForm,
+      isSaving,
+      isChangingPassword,
+      isDeletingAccount,
       showToast,
       toastTitle,
       toastMessage,
+      changePassword,
+      deleteAccount,
       hideStatusToast
     };
   },
@@ -81,8 +259,15 @@ export const SettingsView = {
 
           <div class="mb-4">
             <label class="block text-[0.85rem] text-[var(--muted)] mb-2 font-semibold">Password</label>
-            <button class="btn-calibrate w-full py-3 mt-0">Change Password</button>
+            <input v-model="passwordForm.oldPassword" type="password" class="input-field mb-2" placeholder="Current password" />
+            <input v-model="passwordForm.newPassword" type="password" class="input-field mb-2" placeholder="New password" />
+            <input v-model="passwordForm.confirmNewPassword" type="password" class="input-field mb-2" placeholder="Confirm new password" />
+            <button class="btn-calibrate w-full py-3 mt-0" :disabled="isChangingPassword" @click="changePassword">
+              {{ isChangingPassword ? 'Updating Password...' : 'Change Password' }}
+            </button>
           </div>
+
+          <div class="text-[0.75rem] text-[var(--muted)]" v-if="isSaving">Saving settings...</div>
         </div>
 
         <div class="card delay-[150ms]">
@@ -155,31 +340,17 @@ export const SettingsView = {
           </div>
 
           <button class="btn-calibrate w-full py-3 mb-3 mt-0">Download My Data</button>
-          <button class="btn-calibrate w-full py-3 border-[var(--danger)] text-[var(--danger)] mt-0">Delete Account</button>
+          <button
+            class="btn-calibrate w-full py-3 border-[var(--danger)] text-[var(--danger)] mt-0"
+            :disabled="isDeletingAccount"
+            @click="deleteAccount"
+          >
+            {{ isDeletingAccount ? 'Deleting Account...' : 'Delete Account' }}
+          </button>
         </div>
       </div>
 
       <div class="right-col">
-        <div class="card delay-[200ms]">
-          <div class="section-header mb-5">
-            <div class="section-title">System</div>
-          </div>
-
-          <div class="setting-item mb-4">
-            <div>
-              <div class="font-semibold mb-1">Auto Update</div>
-              <div class="text-[0.8rem] text-[var(--muted)]">Check for updates automatically</div>
-            </div>
-            <div :class="['toggle-switch', { active: settings.autoUpdate }]" @click="settings.autoUpdate = !settings.autoUpdate"></div>
-          </div>
-
-          <button class="btn-calibrate w-full py-3 mb-3 mt-0">Check for Updates</button>
-          <div class="text-[0.8rem] text-[var(--muted)] p-3 bg-[var(--surface2)] rounded-lg">
-            <div>Current Version: 1.2.3</div>
-            <div>Last Updated: Mar 5, 2026</div>
-          </div>
-        </div>
-
         <div class="card delay-[250ms]">
           <div class="section-header mb-5">
             <div class="section-title">Help & Support</div>

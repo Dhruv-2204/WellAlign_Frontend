@@ -176,3 +176,11 @@ export function getAuthToken() {
 export function useAuth() {
   return state;
 }
+
+export function updateAuthUser(partialUser = {}) {
+  if (!state.user) return;
+  state.user = {
+    ...state.user,
+    ...partialUser
+  };
+}
