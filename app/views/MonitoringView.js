@@ -613,6 +613,10 @@ ${generatedReport.value.healthRiskAssessment}
           <p class="text-[var(--muted)] text-[1rem]">Pick session duration, hold threshold, and alert types before starting</p>
         </div>
 
+        <div class="assess-warning-banner mb-8">
+          ⚠️ Monitoring guidance only. These insights help with posture awareness, but they are not clinical exam results or a medical diagnosis. If pain, dizziness, headaches, or discomfort persist, stop and seek advice from a qualified healthcare professional.
+        </div>
+
         <!-- Duration Picker -->
         <div class="mb-8">
           <label class="block text-[0.95rem] font-semibold mb-3">Session Duration</label>
@@ -793,7 +797,17 @@ ${generatedReport.value.healthRiskAssessment}
           <div class="text-center mb-8">
             <h2 class="font-[Syne] text-[2rem] font-extrabold mb-2">Your Posture Report</h2>
             <p class="text-[var(--muted)]">Session completed — {{ sessionElapsedTime }} of monitoring</p>
-            <p class="text-[0.75rem] text-[var(--muted)] mt-2">Wellbeing guidance only. Seek clinical care for persistent pain or injury concerns.</p>
+          </div>
+
+          <div class="assess-warning-banner">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-5 h-5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4"/>
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 17h.01"/>
+              <path stroke-linecap="round" stroke-linejoin="round" d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/>
+            </svg>
+            <div>
+              <strong>Monitoring guidance only.</strong> This is not a clinical exam. Live camera frames are analyzed in-session, and raw video is not stored.
+            </div>
           </div>
 
           <PostureReport 

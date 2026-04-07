@@ -612,6 +612,19 @@ export const AssessView = {
       </app-card>
     </div>
 
+    <div class="w-full">
+      <div class="assess-warning-banner">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-5 h-5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 17h.01"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/>
+        </svg>
+        <div>
+          <strong>Wellbeing guidance only.</strong> Uploaded images are used to generate posture analysis results, and we do not store your raw photos on this site.
+        </div>
+      </div>
+    </div>
+
     <div class="monitoring-grid">
       <div class="flex flex-col gap-5">
         <div class="card">
