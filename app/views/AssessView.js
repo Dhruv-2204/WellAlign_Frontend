@@ -8,7 +8,7 @@ import { enrichSearchesWithVideos } from '../services/youtubeService.js';
 
 export const AssessView = {
   setup() {
-    const { ref, onMounted } = Vue;
+    const { ref, computed, onMounted } = Vue;
 
     const backendStatus = ref('Connecting to backend...');
     const frontFileName = ref('');
@@ -39,6 +39,26 @@ export const AssessView = {
     const selectedHistoryItem = ref(null); // For expandable history details
     const errorState = ref(null); // { type: 'landmark_error' | 'timeout' | 'partial' | 'failed', message, image }
     const isLoadingHistory = ref(false);
+
+    const latestAssessment = computed(() => {
+      if (report.value) {
+        const frontScore = report.value.frontResult?.success ? report.value.frontResult.score : null;
+        const sideScore = report.value.sideResult?.success ? report.value.sideResult.score : null;
+        const hasOverall = report.value.report?.overall_score !== undefined && report.value.report?.overall_score !== null;
+        return {
+          timestamp: 'Just now',
+          mode: report.value.status === 'partial'
+            ? (frontScore !== null ? 'Front Only' : 'Side Only')
+            : 'Front + Side',
+          status: report.value.status || 'unknown',
+          overallScore: hasOverall ? report.value.report.overall_score : null,
+          frontScore,
+          sideScore
+        };
+      }
+
+      return reportHistory.value.length ? reportHistory.value[0] : null;
+    });
 
     const {
       showToast,
@@ -558,6 +578,7 @@ export const AssessView = {
       report,
       geminiAssessment,
       reportHistory,
+      latestAssessment,
       selectedHistoryItem,
       isLoadingHistory,
       errorState,
@@ -952,6 +973,36 @@ export const AssessView = {
       </div>
 
       <div class="right-col">
+        <div class="card">
+          <div class="section-header">
+            <div class="section-title">Posture Assessment</div>
+            <span class="badge" :class="latestAssessment ? 'badge-green' : 'badge-muted'">
+              {{ latestAssessment ? 'Latest Result' : 'No Reports Yet' }}
+            </span>
+          </div>
+
+          <div v-if="latestAssessment" class="bg-[var(--surface2)] border border-[var(--border)] rounded-xl p-4">
+            <div class="flex justify-between items-start mb-3">
+              <div class="text-[0.82rem] text-[var(--muted)]">Last Assessment</div>
+              <span class="badge" :style="{ backgroundColor: getStatusBadgeColor(latestAssessment.status), color: '#fff' }">
+                {{ String(latestAssessment.status || 'unknown').toUpperCase() }}
+              </span>
+            </div>
+
+            <div class="flex flex-col gap-2 text-[0.85rem]">
+              <div class="flex justify-between"><span class="text-[var(--muted)]">When</span><span>{{ latestAssessment.timestamp }}</span></div>
+              <div class="flex justify-between"><span class="text-[var(--muted)]">Mode</span><span>{{ latestAssessment.mode }}</span></div>
+              <div class="flex justify-between" v-if="latestAssessment.overallScore !== null"><span class="text-[var(--muted)]">Overall</span><span class="text-[var(--accent)] font-semibold">{{ latestAssessment.overallScore }}%</span></div>
+              <div class="flex justify-between" v-if="latestAssessment.frontScore !== null"><span class="text-[var(--muted)]">Front</span><span>{{ latestAssessment.frontScore }}%</span></div>
+              <div class="flex justify-between" v-if="latestAssessment.sideScore !== null"><span class="text-[var(--muted)]">Side</span><span>{{ latestAssessment.sideScore }}%</span></div>
+            </div>
+          </div>
+
+          <div v-else class="bg-[var(--surface2)] border border-[var(--border)] rounded-xl p-4 text-[0.85rem] text-[var(--muted)]">
+            Complete your first upload to see the most recent posture assessment summary here.
+          </div>
+        </div>
+
         <div class="card">
           <div class="section-header">
             <div class="section-title">Guidelines</div>

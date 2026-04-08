@@ -26,12 +26,8 @@ export const SettingsView = {
     const settings = reactive({
       fullName: '',
       email: '',
-      autoStart: true,
       alerts: true,
       sound: false,
-      sensitivity: 'normal',
-      frequency: 'normal',
-      analytics: true,
       cameraPrivacy: true
     });
 
@@ -65,12 +61,8 @@ export const SettingsView = {
         try {
           const prefResponse = await api.account.getSettings();
           const pref = unwrapData(prefResponse) || {};
-          settings.autoStart = pref.autoStart ?? settings.autoStart;
           settings.alerts = pref.alerts ?? settings.alerts;
           settings.sound = pref.sound ?? settings.sound;
-          settings.sensitivity = pref.sensitivity || settings.sensitivity;
-          settings.frequency = pref.frequency || settings.frequency;
-          settings.analytics = pref.analytics ?? settings.analytics;
           settings.cameraPrivacy = pref.cameraPrivacy ?? settings.cameraPrivacy;
         } catch (prefErr) {
           // Keep defaults if settings endpoint is unavailable.
@@ -107,12 +99,8 @@ export const SettingsView = {
 
         try {
           await api.account.updateSettings({
-            autoStart: settings.autoStart,
             alerts: settings.alerts,
             sound: settings.sound,
-            sensitivity: settings.sensitivity,
-            frequency: settings.frequency,
-            analytics: settings.analytics,
             cameraPrivacy: settings.cameraPrivacy
           });
           preferencesSaved = true;
@@ -240,7 +228,7 @@ export const SettingsView = {
       </app-card>
     </div>
 
-    <div class="monitoring-grid">
+    <div class="monitoring-grid settings-grid">
       <div class="flex flex-col gap-5">
         <div class="card delay-[100ms]">
           <div class="section-header mb-5">
@@ -276,14 +264,7 @@ export const SettingsView = {
           </div>
 
           <div class="setting-item">
-            <div>
-              <div class="font-semibold mb-1">Auto-start Session</div>
-              <div class="text-[0.8rem] text-[var(--muted)]">Automatically start monitoring on launch</div>
-            </div>
-            <div :class="['toggle-switch', { active: settings.autoStart }]" @click="settings.autoStart = !settings.autoStart"></div>
-          </div>
 
-          <div class="setting-item">
             <div>
               <div class="font-semibold mb-1">Alert Notifications</div>
               <div class="text-[0.8rem] text-[var(--muted)]">Receive posture alerts during sessions</div>
@@ -299,23 +280,7 @@ export const SettingsView = {
             <div :class="['toggle-switch', { active: settings.sound }]" @click="settings.sound = !settings.sound"></div>
           </div>
 
-          <div class="mt-4">
-            <label class="block text-[0.85rem] text-[var(--muted)] mb-2 font-semibold">Alert Sensitivity</label>
-            <select v-model="settings.sensitivity" class="select-field">
-              <option value="low">Low</option>
-              <option value="normal">Normal</option>
-              <option value="high">High</option>
-            </select>
-          </div>
 
-          <div>
-            <label class="block text-[0.85rem] text-[var(--muted)] mb-2 font-semibold">Check Frequency</label>
-            <select v-model="settings.frequency" class="select-field">
-              <option value="low">Every 30 seconds</option>
-              <option value="normal">Every 15 seconds</option>
-              <option value="high">Every 5 seconds</option>
-            </select>
-          </div>
         </div>
 
         <div class="card delay-[200ms]">
@@ -323,13 +288,6 @@ export const SettingsView = {
             <div class="section-title">Privacy & Data</div>
           </div>
 
-          <div class="setting-item">
-            <div>
-              <div class="font-semibold mb-1">Data Analytics</div>
-              <div class="text-[0.8rem] text-[var(--muted)]">Help improve posture detection with usage data</div>
-            </div>
-            <div :class="['toggle-switch', { active: settings.analytics }]" @click="settings.analytics = !settings.analytics"></div>
-          </div>
 
           <div class="setting-item mb-4">
             <div>
@@ -350,26 +308,7 @@ export const SettingsView = {
         </div>
       </div>
 
-      <div class="right-col">
-        <div class="card delay-[250ms]">
-          <div class="section-header mb-5">
-            <div class="section-title">Help & Support</div>
-          </div>
 
-          <button class="btn-calibrate w-full py-3 mb-3 mt-0 text-left inline-flex items-center gap-2">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.5 3.5 10 12 13.5 20.5 10 12 6.5Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M7 12.2V16c0 .8 2.2 2 5 2s5-1.2 5-2v-3.8"/></svg>
-            <span>User Guide</span>
-          </button>
-          <button class="btn-calibrate w-full py-3 mb-3 text-left inline-flex items-center gap-2">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16v12H4z"/><path stroke-linecap="round" stroke-linejoin="round" d="m4 7 8 6 8-6"/></svg>
-            <span>Contact Support</span>
-          </button>
-          <button class="btn-calibrate w-full py-3 text-left inline-flex items-center gap-2">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="m8 8 8 8"/><path stroke-linecap="round" stroke-linejoin="round" d="m16 8-8 8"/><path stroke-linecap="round" stroke-linejoin="round" d="M9.5 19H7a2 2 0 0 1-2-2v-2.5"/><path stroke-linecap="round" stroke-linejoin="round" d="M14.5 5H17a2 2 0 0 1 2 2v2.5"/></svg>
-            <span>Report Issue</span>
-          </button>
-        </div>
-      </div>
     </div>
 
     <div v-if="showToast" class="alert-toast">

@@ -3,6 +3,7 @@ import { useStatusToast } from '../utils/useStatusToast.js';
 import { useMonitoringSession } from '../services/monitoringSession.js';
 import { sendGeminiChatMessage, fetchGeminiChatHistory } from '../services/geminiService.js';
 import { useAuth } from '../services/auth.js';
+import { fetchAssessmentHistory, formatAssessmentForHistory } from '../services/assessmentHistory.js';
 
 const CHAT_VIDEO_CACHE_KEY = 'wa-chat-video-cache';
 
@@ -57,6 +58,21 @@ export const DashboardView = {
     const monitoringState = useMonitoringSession();
     const monitoringStatus = computed(() => (monitoringState.isMonitoring ? 'ON' : 'OFF'));
     const lastSession = computed(() => monitoringState.lastSession);
+    const latestAssessment = ref(null);
+    const monitoringScore = computed(() => lastSession.value?.score ?? null);
+    const assessmentScore = computed(() => {
+      if (!latestAssessment.value) return null;
+      if (latestAssessment.value.overallScore !== null && latestAssessment.value.overallScore !== undefined) {
+        return latestAssessment.value.overallScore;
+      }
+      if (latestAssessment.value.frontScore !== null && latestAssessment.value.frontScore !== undefined) {
+        return latestAssessment.value.frontScore;
+      }
+      if (latestAssessment.value.sideScore !== null && latestAssessment.value.sideScore !== undefined) {
+        return latestAssessment.value.sideScore;
+      }
+      return null;
+    });
     const authState = useAuth();
     const userFirstName = computed(() => {
       const name = authState.user?.name || '';
@@ -80,6 +96,24 @@ export const DashboardView = {
     function goToMonitoring() {
       router.push({ name: 'monitoring', query: { report: 'last' } });
     }
+
+    function goToAssess() {
+      router.push({ name: 'assess' });
+    }
+
+    async function loadLatestAssessment() {
+      try {
+        const history = await fetchAssessmentHistory();
+        if (!history.length) {
+          latestAssessment.value = null;
+          return;
+        }
+        latestAssessment.value = formatAssessmentForHistory(history[0]);
+      } catch (error) {
+        console.error('Failed to load latest assessment:', error);
+        latestAssessment.value = null;
+      }
+    }
     const {
       showToast,
       toastTitle,
@@ -98,11 +132,7 @@ export const DashboardView = {
       }
     ]);
 
-    const recentSessions = ref([
-      { id: 1, date: 'Monday 12:30 PM', duration: '45 min', score: 87, scoreColor: '#c8f96a' },
-      { id: 2, date: 'Sunday 2:15 PM', duration: '30 min', score: 82, scoreColor: '#6af9c8' },
-      { id: 3, date: 'Saturday 3:45 PM', duration: '52 min', score: 91, scoreColor: '#c8f96a' }
-    ]);
+
 
     let timerInterval = null;
     let chartInstance = null;
@@ -313,6 +343,7 @@ export const DashboardView = {
         unavailableMessage: 'Backend unavailable; showing local dashboard data',
         countSuffix: 'records fetched'
       });
+      await loadLatestAssessment();
       await loadChatHistory();
       showStatusToast('Slouch Detected', 'You have been leaning forward for 15 minutes. Straighten up and take a short break.', 'var(--warn)');
       nextTick(() => initChart());
@@ -328,13 +359,15 @@ export const DashboardView = {
       isSessionActive,
       monitoringStatus,
       lastSession,
+      latestAssessment,
+      monitoringScore,
+      assessmentScore,
       chatInput,
       isSendingChat,
       chatMessages,
       showToast,
       toastTitle,
       toastMessage,
-      recentSessions,
       backendStatus,
       startSession,
       endSession,
@@ -343,6 +376,7 @@ export const DashboardView = {
       handleChatInputKeydown,
       formatSessionEndedAt,
       goToMonitoring,
+      goToAssess,
       userFirstName
     };
   },
@@ -359,81 +393,92 @@ export const DashboardView = {
       </app-card>
     </div>
 
-    <div class="stats-row">
-      <div class="stat-card green delay-[50ms]">
-        <div class="card-label">Posture Score</div>
-        <div class="score-ring-wrap">
-          <div class="score-ring">
-            <svg width="56" height="56" viewBox="0 0 56 56">
-              <circle class="ring-bg" cx="28" cy="28" r="22" fill="none" stroke-width="5"/>
-              <circle class="ring-fill" cx="28" cy="28" r="22" fill="none" stroke-width="5"/>
-            </svg>
-            <div class="center-text">84</div>
+    <div class="dashboard-main-grid">
+      <div class="dashboard-left-stack">
+        <div class="stats-row dashboard-stats-row">
+          <div class="stat-card green delay-[50ms]">
+            <div class="card-label">Monitoring Score</div>
+            <div class="card-value text-3xl text-[var(--accent)]">{{ monitoringScore !== null ? monitoringScore + '%' : 'N/A' }}</div>
+            <div class="text-[0.72rem] text-[var(--muted)] mt-0.5">
+              {{ lastSession ? formatSessionEndedAt(lastSession.endedAt) : 'No sessions yet' }}
+            </div>
           </div>
-          <div>
-            <div class="card-value text-3xl text-[var(--accent)]">84%</div>
-            <div class="text-[0.72rem] text-[var(--muted)] mt-0.5">up 3% from yesterday</div>
+
+          <div class="stat-card teal delay-[100ms]">
+            <div class="card-label">Assessment Score</div>
+            <div class="card-value text-3xl text-[var(--accent2)]">{{ assessmentScore !== null ? assessmentScore + '%' : 'N/A' }}</div>
+            <div class="text-[0.72rem] text-[var(--muted)] mt-0.5">
+              {{ latestAssessment ? latestAssessment.timestamp : 'No assessments yet' }}
+            </div>
           </div>
         </div>
-      </div>
 
-      <div class="stat-card teal delay-[100ms]">
-        <div class="card-label">Active Session</div>
-        <div class="session-timer">{{ timer }}</div>
-        <div class="goal-sub">{{ isSessionActive ? 'Live monitoring running' : 'Start a new session' }}</div>
-      </div>
+        <div class="dashboard-summary-grid">
+          <div class="card delay-[250ms]">
+            <div class="section-header">
+              <div class="section-title">Live Monitoring</div>
+              <span class="badge" :class="monitoringStatus === 'ON' ? 'badge-green' : 'badge-muted'">{{ monitoringStatus }}</span>
+            </div>
 
-      <div class="stat-card warn delay-[150ms]">
-        <div class="card-label">Slouch Alerts</div>
-        <div class="card-value text-[var(--warn)]">12</div>
-        <div class="issues-row">
-          <span class="issue-chip red">Forward Head</span>
-          <span class="issue-chip warn">Rounded Shoulders</span>
-        </div>
-      </div>
+            <div class="bg-[var(--surface2)] border border-[var(--border)] rounded-xl p-4 flex flex-col gap-3 h-full">
+              <div class="flex justify-between items-start">
+                <div class="text-[0.82rem] text-[var(--muted)]">Last Session</div>
+                <span class="badge" :class="monitoringStatus === 'ON' ? 'badge-green' : 'badge-muted'">{{ monitoringStatus === 'ON' ? 'ACTIVE' : 'IDLE' }}</span>
+              </div>
 
-      <div class="stat-card neutral delay-[200ms]">
-        <div class="card-label">Daily Goal</div>
-        <div class="flex items-baseline gap-1">
-          <div class="goal-text">6</div>
-          <div class="text-[var(--muted)] text-lg font-[Syne] font-bold">/8h</div>
-        </div>
-        <div class="posture-bar-wrap">
-          <div class="posture-bar">
-            <div class="posture-bar-fill w-[75%]"></div>
+              <div v-if="lastSession" class="flex flex-col gap-2 text-[0.85rem]">
+                <div class="flex justify-between"><span class="text-[var(--muted)]">When</span><span>{{ formatSessionEndedAt(lastSession.endedAt) }}</span></div>
+                <div class="flex justify-between"><span class="text-[var(--muted)]">Duration</span><span>{{ lastSession.duration }}</span></div>
+                <div class="flex justify-between"><span class="text-[var(--muted)]">Score</span><span class="text-[var(--accent)] font-semibold">{{ lastSession.score }}%</span></div>
+              </div>
+
+              <div v-else class="text-[0.85rem] text-[var(--muted)]">
+                No monitoring sessions yet. Start one to see your latest session stats.
+              </div>
+
+              <button @click="goToMonitoring" class="btn-calibrate btn-emphasis btn-emphasis-accent text-center mt-0">Open Monitoring Page</button>
+            </div>
           </div>
-          <div class="text-[0.68rem] text-[var(--muted)] mt-1">75% of daily monitoring goal</div>
-        </div>
-      </div>
-    </div>
 
-    <div class="monitoring-grid">
-      <div class="flex flex-col gap-5">
+          <div class="card delay-[280ms]">
+            <div class="section-header">
+              <div class="section-title">Posture Assessment</div>
+              <span class="badge" :class="latestAssessment ? 'badge-green' : 'badge-muted'">
+                {{ latestAssessment ? 'Latest Result' : 'No Reports Yet' }}
+              </span>
+            </div>
+
+            <div v-if="latestAssessment" class="bg-[var(--surface2)] border border-[var(--border)] rounded-xl p-4 h-full">
+              <div class="flex justify-between items-start mb-3">
+                <div class="text-[0.82rem] text-[var(--muted)]">Last Assessment</div>
+                <span class="badge" :style="{ backgroundColor: latestAssessment.status === 'success' ? 'var(--accent)' : latestAssessment.status === 'partial' ? 'var(--warn)' : 'var(--danger)', color: '#fff' }">
+                  {{ String(latestAssessment.status || 'unknown').toUpperCase() }}
+                </span>
+              </div>
+
+              <div class="flex flex-col gap-2 text-[0.85rem]">
+                <div class="flex justify-between"><span class="text-[var(--muted)]">When</span><span>{{ latestAssessment.timestamp }}</span></div>
+                <div class="flex justify-between"><span class="text-[var(--muted)]">Mode</span><span>{{ latestAssessment.mode }}</span></div>
+                <div class="flex justify-between" v-if="latestAssessment.overallScore !== null"><span class="text-[var(--muted)]">Overall</span><span class="text-[var(--accent)] font-semibold">{{ latestAssessment.overallScore }}%</span></div>
+                <div class="flex justify-between" v-if="latestAssessment.frontScore !== null"><span class="text-[var(--muted)]">Front</span><span>{{ latestAssessment.frontScore }}%</span></div>
+                <div class="flex justify-between" v-if="latestAssessment.sideScore !== null"><span class="text-[var(--muted)]">Side</span><span>{{ latestAssessment.sideScore }}%</span></div>
+              </div>
+
+              <button @click="goToAssess" class="btn-calibrate btn-emphasis btn-emphasis-accent text-center mt-4 w-full">
+                Open Assess Page
+              </button>
+            </div>
+
+            <div v-else class="bg-[var(--surface2)] border border-[var(--border)] rounded-xl p-4 text-[0.85rem] text-[var(--muted)] h-full flex flex-col justify-between">
+              <div>Complete your first assessment to see latest posture report details here.</div>
+              <button @click="goToAssess" class="btn-calibrate btn-emphasis btn-emphasis-accent text-center mt-4 w-full">
+                Go to Assess
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div class="card delay-[250ms]">
-          <div class="section-header">
-            <div class="section-title">Live Monitoring</div>
-            <span class="badge" :class="monitoringStatus === 'ON' ? 'badge-green' : 'badge-muted'">{{ monitoringStatus }}</span>
-          </div>
-
-          <div class="bg-[var(--surface2)] border border-[var(--border)] rounded-xl p-4 flex flex-col gap-3">
-            <p class="text-[0.9rem] text-[var(--muted)]">Live camera preview has been moved to the dedicated monitoring page.</p>
-            <router-link to="/monitoring" class="btn-calibrate btn-emphasis btn-emphasis-accent text-center mt-0">Open Monitoring Page</router-link>
-          </div>
-
-          <div v-if="lastSession" class="mt-4 bg-[var(--surface2)] border border-[var(--border)] rounded-xl p-4">
-            <div class="flex justify-between items-start mb-3">
-              <div class="section-title">Last Session Stats</div>
-              <button @click="goToMonitoring" class="text-[0.7rem] text-[var(--accent)] hover:underline font-semibold">View Details</button>
-            </div>
-            <div class="flex flex-col gap-2 text-[0.85rem]">
-              <div class="flex justify-between"><span class="text-[var(--muted)]">Ended</span><span>{{ formatSessionEndedAt(lastSession.endedAt) }}</span></div>
-              <div class="flex justify-between"><span class="text-[var(--muted)]">Duration</span><span>{{ lastSession.duration }}</span></div>
-              <div class="flex justify-between"><span class="text-[var(--muted)]">Score</span><span class="text-[var(--accent)] font-semibold">{{ lastSession.score }}%</span></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card delay-[300ms]">
           <div class="section-header">
             <div class="section-title">Weekly Progress History</div>
             <div class="flex gap-2">
@@ -448,10 +493,10 @@ export const DashboardView = {
         </div>
       </div>
 
-      <div class="right-col">
-        <div class="card delay-[300ms] flex-1 min-h-[34rem]">
+      <div class="right-col dashboard-chat-col">
+        <div class="card delay-[300ms] dashboard-chat-card">
           <div class="section-header">
-            <div class="section-title">Well AI Assistant</div>
+            <div class="section-title">AI Assistant</div>
           </div>
 
           <div class="mb-3 p-3 text-[0.78rem] rounded-lg border border-[var(--warn)] bg-[rgba(249,115,22,0.08)] text-[var(--muted)]">
@@ -496,22 +541,7 @@ export const DashboardView = {
           </div>
         </div>
 
-        <div class="card delay-[350ms]">
-          <div class="section-header">
-            <div class="section-title">Recent Sessions</div>
-            <span class="badge badge-muted">This Week</span>
-          </div>
 
-          <div class="flex flex-col gap-2.5">
-            <div v-for="session in recentSessions" :key="session.id" class="flex justify-between items-center p-3 bg-[var(--surface2)] rounded-lg">
-              <div>
-                <div class="font-medium text-[0.9rem] mb-1">{{ session.date }}</div>
-                <div class="text-sm text-[var(--muted)]">{{ session.duration }} • {{ session.score }}% score</div>
-              </div>
-              <div :style="{ color: session.scoreColor }" class="text-xl font-extrabold">{{ session.score }}%</div>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
 

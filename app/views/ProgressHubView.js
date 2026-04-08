@@ -43,11 +43,7 @@ export const ProgressHubView = {
       }
     ]);
 
-    const prescribedExercises = ref([
-      { id: 1, name: 'Wall slides', meta: 'Mobility · 2 x 12' },
-      { id: 2, name: 'Prone Y/T/W', meta: 'Strength · 3 x 10' },
-      { id: 3, name: 'Hip flexor stretch', meta: 'Mobility · 2 x 30s' }
-    ]);
+
 
     // ===== PROGRESS DATA =====
     const weeklyData = ref([
@@ -84,10 +80,6 @@ export const ProgressHubView = {
       task.completed = !task.completed;
       const state = task.completed ? 'completed' : 'marked as pending';
       showStatusToast('Plan Updated', `${task.title} ${state}.`);
-    }
-
-    function exportPlan() {
-      showStatusToast('Export Started', 'Your plan export is being prepared.');
     }
 
     function getChartData() {
@@ -211,10 +203,8 @@ export const ProgressHubView = {
       toastMessage,
       // Plan
       todaysPlan,
-      prescribedExercises,
       completedCount,
       toggleTask,
-      exportPlan,
       // Progress
       weeklyData,
       sessionHistory,
@@ -233,9 +223,7 @@ export const ProgressHubView = {
             <p class="text-[var(--muted)] text-[0.95rem]">Your daily plan & posture progress in one view</p>
             <p class="text-[0.75rem] text-[var(--muted)] mt-2">{{ backendSyncStatus }}</p>
           </div>
-          <div class="flex gap-2">
-            <button class="btn-calibrate mt-0 bg-[var(--surface2)] text-[var(--text)]" @click="exportPlan">Export Plan</button>
-          </div>
+
         </div>
       </app-card>
     </div>
@@ -350,43 +338,7 @@ export const ProgressHubView = {
           </div>
         </div>
 
-        <!-- PRESCRIBED EXERCISES -->
-        <div class="card delay-[200ms]">
-          <div class="section-header">
-            <div class="section-title">Prescribed Exercises</div>
-          </div>
 
-          <div class="flex flex-col gap-3">
-            <div v-for="exercise in prescribedExercises" :key="exercise.id" class="p-3 bg-[var(--surface2)] rounded-lg border border-[var(--border)]">
-              <div class="font-semibold text-[0.95rem]">{{ exercise.name }}</div>
-              <div class="text-sm text-[var(--muted)] mt-1">{{ exercise.meta }}</div>
-              <a class="badge badge-green text-[0.75rem] mt-2 inline-block" href="">View</a>
-            </div>
-          </div>
-        </div>
-
-        <!-- PROGRESSION INFO -->
-        <div class="card delay-[250ms]">
-          <div class="section-header">
-            <div class="section-title">Progression</div>
-            <span class="badge badge-muted">Week 3</span>
-          </div>
-
-          <div class="space-y-3">
-            <div class="p-3 rounded-lg bg-[var(--surface2)] border border-[var(--border)]">
-              <div class="card-label text-[0.75rem]">Focus Area</div>
-              <div class="card-value text-[1.1rem] text-[var(--accent)] mt-1">Neck / Thoracic</div>
-            </div>
-            <div class="p-3 rounded-lg bg-[var(--surface2)] border border-[var(--border)]">
-              <div class="card-label text-[0.75rem]">Intensity</div>
-              <div class="card-value text-[1.1rem] mt-1">Light → Moderate</div>
-            </div>
-            <div class="p-3 rounded-lg bg-[var(--surface2)] border border-[var(--border)]">
-              <div class="card-label text-[0.75rem]">Next Review</div>
-              <div class="card-value text-[1.1rem] mt-1">In 5 days</div>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
 
