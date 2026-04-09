@@ -208,6 +208,65 @@ export const MonitoringView = {
       ? `${selectedDuration.value} minute timed session`
       : 'Unlimited session (manual stop)');
 
+    const topGeminiVideos = computed(() => {
+      const seen = new Set();
+      const items = [];
+
+      (Array.isArray(geminiVideoGroups.value) ? geminiVideoGroups.value : []).forEach((group) => {
+        (Array.isArray(group?.videos) ? group.videos : []).forEach((video) => {
+          const url = String(video?.url || '').trim();
+          const title = String(video?.title || '').trim();
+          if (!url || !title || seen.has(url)) return;
+          seen.add(url);
+          items.push({
+            url,
+            title,
+            videoId: video?.videoId || url,
+          });
+        });
+      });
+
+      return items.slice(0, 3);
+    });
+
+    const targetedExerciseSearches = computed(() => {
+      const fromGemini = Array.isArray(geminiSessionAnalysis.value?.youtubeSearches)
+        ? geminiSessionAnalysis.value.youtubeSearches
+        : [];
+
+      const fromGroups = (Array.isArray(geminiVideoGroups.value) ? geminiVideoGroups.value : [])
+        .map((group) => ({
+          query: String(group?.query || '').trim(),
+          reason: String(group?.reason || '').trim(),
+        }))
+        .filter((item) => item.query.length > 0);
+
+      const merged = [...fromGemini, ...fromGroups]
+        .filter((item) => item && typeof item === 'object')
+        .map((item) => ({
+          query: String(item.query || '').trim(),
+          reason: String(item.reason || '').trim(),
+        }))
+        .filter((item) => item.query.length > 0);
+
+      const seen = new Set();
+      const unique = [];
+      merged.forEach((item) => {
+        const key = item.query.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        unique.push(item);
+      });
+
+      return unique.slice(0, 6);
+    });
+
+    function buildYoutubeSearchUrl(query) {
+      const q = String(query || '').trim();
+      if (!q) return 'https://www.youtube.com/results?search_query=posture+correction+exercise';
+      return `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
+    }
+
     function unwrapData(response) {
       if (!response || typeof response !== 'object') return response;
       if (response.success && response.data !== undefined) return response.data;
@@ -325,8 +384,140 @@ export const MonitoringView = {
         alerts,
         geminiAnalysis: session?.gemini_analysis || '',
         recommendedExercises: Array.isArray(session?.recommended_exercises) ? session.recommended_exercises : [],
-        youtubeSearches: Array.isArray(session?.youtube_searches) ? session.youtube_searches : []
+        youtubeSearches: Array.isArray(session?.youtube_searches) ? session.youtube_searches : [],
+        issueGuidance: Array.isArray(session?.issue_guidance) ? session.issue_guidance : [],
+        overallWorkingTips: Array.isArray(session?.overall_working_tips) ? session.overall_working_tips : []
       };
+    }
+
+    function toIssueSummaryPayload(report) {
+      const issues = Array.isArray(report?.detailedIssues) ? report.detailedIssues : [];
+      return issues
+        .map((issue) => {
+          const durationMinutes = Number.parseFloat(String(issue.durationMinutes || '').replace(/[^0-9.]/g, ''));
+          return {
+            issueType: String(issue.type || '').trim(),
+            title: String(issue.title || '').trim(),
+            severity: Number.isFinite(Number(issue.severity)) ? Number(issue.severity) : null,
+            percentage: Number.isFinite(Number(issue.percentage)) ? Number(issue.percentage) : null,
+            durationMinutes: Number.isFinite(durationMinutes) ? durationMinutes : null,
+          };
+        })
+        .filter((issue) => issue.issueType || issue.title);
+    }
+
+    function buildVideoLookup(videoGroups) {
+      const map = new Map();
+      (Array.isArray(videoGroups) ? videoGroups : []).forEach((group) => {
+        const key = String(group?.query || '').trim().toLowerCase();
+        if (!key) return;
+        map.set(key, Array.isArray(group?.videos) ? group.videos : []);
+      });
+      return map;
+    }
+
+    function buildFallbackGuidanceFromReport(report, geminiResult) {
+      const issues = Array.isArray(report?.detailedIssues) ? report.detailedIssues : [];
+      const topLevelSearches = Array.isArray(geminiResult?.youtubeSearches) ? geminiResult.youtubeSearches : [];
+
+      return issues.map((issue) => ({
+        issue_type: String(issue.type || '').trim(),
+        issue_title: String(issue.title || '').trim(),
+        definition: String(issue.description || '').trim(),
+        why_matters: String(issue.healthRisk || '').trim(),
+        recommended_exercises: Array.isArray(issue.dailyExercises)
+          ? issue.dailyExercises.map((exercise) => exercise?.name).filter(Boolean)
+          : [],
+        workstation_tips: Array.isArray(issue.workstationSetup) ? issue.workstationSetup : [],
+        youtube_searches: topLevelSearches.length > 0
+          ? topLevelSearches.slice(0, 2)
+          : [{
+              query: `${String(issue.title || issue.type || 'posture').trim()} posture correction exercises`,
+              reason: 'Issue-focused corrective routine'
+            }],
+      }));
+    }
+
+    function applyGeminiGuidanceToReport(report, geminiResult, videoGroups) {
+      if (!report || !geminiResult) return;
+
+      const guidanceRows = Array.isArray(geminiResult.issueGuidance) && geminiResult.issueGuidance.length > 0
+        ? geminiResult.issueGuidance
+        : buildFallbackGuidanceFromReport(report, geminiResult);
+      if (Number.isFinite(Number(geminiResult.confirmedScore))) {
+        report.overallScore = Math.max(0, Math.min(100, Math.round(Number(geminiResult.confirmedScore))));
+      }
+
+      report.aiSessionAnalysis = String(geminiResult.analysis || '').trim();
+      report.overallWorkingTips = Array.isArray(geminiResult.overallWorkingTips) ? geminiResult.overallWorkingTips : [];
+
+      const guidanceByType = new Map();
+      guidanceRows.forEach((row) => {
+        const typeKey = String(row?.issue_type || '').trim().toLowerCase();
+        const titleKey = String(row?.issue_title || '').trim().toLowerCase();
+        if (typeKey) guidanceByType.set(typeKey, row);
+        if (titleKey) guidanceByType.set(titleKey, row);
+      });
+
+      const videosByQuery = buildVideoLookup(videoGroups);
+      report.detailedIssues = (Array.isArray(report.detailedIssues) ? report.detailedIssues : []).map((issue) => {
+        const lookupType = String(issue.type || '').trim().toLowerCase();
+        const lookupTitle = String(issue.title || '').trim().toLowerCase();
+        const guidance = guidanceByType.get(lookupType) || guidanceByType.get(lookupTitle);
+        if (!guidance) {
+          return issue;
+        }
+
+        const youtubeSearches = Array.isArray(guidance.youtube_searches) ? guidance.youtube_searches : [];
+        const dynamicLinks = [];
+        youtubeSearches.forEach((search) => {
+          const rawQuery = String(search?.query || '').trim();
+          const queryKey = rawQuery.toLowerCase();
+          if (!queryKey) return;
+          const videos = videosByQuery.get(queryKey) || [];
+          if (videos.length > 0) {
+            videos.slice(0, 2).forEach((video) => {
+              if (!video?.url || !video?.title) return;
+              dynamicLinks.push({ title: video.title, url: video.url });
+            });
+            return;
+          }
+
+          dynamicLinks.push({
+            title: search?.reason ? `${search.reason}` : `Search: ${rawQuery}`,
+            url: `https://www.youtube.com/results?search_query=${encodeURIComponent(rawQuery)}`
+          });
+        });
+
+        const recommendedExercises = Array.isArray(guidance.recommended_exercises)
+          ? guidance.recommended_exercises
+          : [];
+        const workstationTips = Array.isArray(guidance.workstation_tips)
+          ? guidance.workstation_tips
+          : [];
+
+        return {
+          ...issue,
+          description: guidance.definition || issue.description,
+          healthRisk: guidance.why_matters || issue.healthRisk,
+          // Keep quick-fix actions distinct from workstation setup tips to avoid duplicated content blocks.
+          immediateActions: issue.immediateActions,
+          dailyExercises: recommendedExercises.length > 0
+            ? recommendedExercises.map((name) => ({
+                name,
+                frequency: 'Daily',
+                reps: '2-3 sets',
+                description: 'Follow pain-free range and controlled movement.'
+              }))
+            : issue.dailyExercises,
+          workstationSetup: workstationTips.length > 0
+            ? workstationTips
+            : issue.workstationSetup,
+          exerciseLinks: dynamicLinks.length > 0
+            ? dynamicLinks
+            : issue.exerciseLinks,
+        };
+      });
     }
 
     async function loadMonitoringHistory() {
@@ -368,7 +559,8 @@ export const MonitoringView = {
         endedAt,
         durationSec: Number(finalSession.duration) || 0,
         score: Number(report.overallScore) || 0,
-        alerts: alertKeys
+        alerts: alertKeys,
+        issueSummary: toIssueSummaryPayload(report)
       });
 
       const savedSession = unwrapData(created) || {};
@@ -376,7 +568,14 @@ export const MonitoringView = {
       if (!sessionId) return;
 
       const geminiResult = await analyzeMonitoringSessionWithGemini(sessionId);
-      const videoGroups = await enrichSearchesWithVideos(geminiResult.youtubeSearches || [], 3);
+      const backendVideoGroups = Array.isArray(geminiResult.youtubeVideoGroups)
+        ? geminiResult.youtubeVideoGroups
+        : [];
+      const videoGroups = backendVideoGroups.length > 0
+        ? backendVideoGroups
+        : await enrichSearchesWithVideos(geminiResult.youtubeSearches || [], 3);
+
+      applyGeminiGuidanceToReport(report, geminiResult, videoGroups);
 
       geminiSessionAnalysis.value = geminiResult;
       geminiVideoGroups.value = videoGroups;
@@ -561,7 +760,7 @@ export const MonitoringView = {
       const finalSession = await endRecordingSession();
 
       // Generate report
-      setTimeout(() => {
+      setTimeout(async () => {
         try {
           if (!finalSession) {
             throw new Error('Session finalization failed - no session returned');
@@ -584,15 +783,14 @@ export const MonitoringView = {
             .map((session) => ({ report: generateDetailedReport(session) }))
             .filter((item) => item.report && item.report.status === 'SUCCESS');
 
-          persistAndAnalyzeSession(finalSession, report)
-            .then(() => {
-              showStatusToast('AI Session Review Ready', 'Gemini validated your session and generated guidance.', 'var(--accent)');
-            })
-            .catch((err) => {
-              console.error('Failed to persist/analyze session:', err);
-              showStatusToast('AI Session Review Unavailable', 'Session report is ready, but AI review is currently unavailable.', 'var(--warn)');
-            });
-          
+          try {
+            await persistAndAnalyzeSession(finalSession, report);
+            showStatusToast('AI Session Review Ready', 'Gemini validated your session and generated guidance.', 'var(--accent)');
+          } catch (err) {
+            console.error('Failed to persist/analyze session:', err);
+            showStatusToast('AI Session Review Unavailable', 'Session report is ready, but AI review is currently unavailable.', 'var(--warn)');
+          }
+
           isLoading.value = false;
           hideStatusToast();
           showStatusToast('Report Ready', 'Your posture analysis is complete.', 'var(--accent)');
@@ -608,6 +806,16 @@ export const MonitoringView = {
     function downloadReport() {
       if (!generatedReport.value) return;
 
+      const overallTips = Array.isArray(generatedReport.value.overallWorkingTips)
+        ? generatedReport.value.overallWorkingTips
+        : [];
+      const guidanceRows = Array.isArray(geminiSessionAnalysis.value?.issueGuidance)
+        ? geminiSessionAnalysis.value.issueGuidance
+        : [];
+      const targetedSearchRows = Array.isArray(geminiSessionAnalysis.value?.youtubeSearches)
+        ? geminiSessionAnalysis.value.youtubeSearches
+        : [];
+
       const reportText = `
 POSTURE ANALYSIS REPORT
 Generated: ${new Date().toLocaleString()}
@@ -620,7 +828,6 @@ Posture Quality: ${generatedReport.value.postureTimeDistribution.GOOD}% Good
 
 Time Distribution:
 - Good Posture: ${generatedReport.value.postureTimeDistribution.GOOD}%
-- Warning: ${generatedReport.value.postureTimeDistribution.WARNING}%
 - Poor: ${generatedReport.value.postureTimeDistribution.POOR}%
 - Critical: ${generatedReport.value.postureTimeDistribution.CRITICAL}%
 
@@ -636,29 +843,34 @@ ${issue.immediateActions.map(a => `- ${a}`).join('\n')}
 Daily Exercises:
 ${issue.dailyExercises.map(e => `- ${e.name} (${e.frequency})`).join('\n')}
 
+Video Resources:
+${(issue.exerciseLinks || []).map(link => `- ${link.title}: ${link.url}`).join('\n') || '- None generated'}
+
 Workstation Setup:
 ${issue.workstationSetup.map(s => `- ${s}`).join('\n')}
 `).join('\n')}
 
-=== PERSONALIZED ADVICE ===
-${generatedReport.value.detailedIssues.map(issue => 
-  issue.personalizedAdvice.map(a => `- ${a}`).join('\n')
-).join('\n')}
+=== AI SESSION REVIEW ===
+${generatedReport.value.aiSessionAnalysis || geminiSessionAnalysis.value?.analysis || 'Unavailable'}
 
-=== ACTION PLAN ===
-Priority Issues: ${generatedReport.value.actionPlan.priority.map(p => p.issue).join(', ')}
+=== TARGETED EXERCISE SEARCHES ===
+${targetedSearchRows.map((search) => `- ${search.query}${search.reason ? ` (${search.reason})` : ''}`).join('\n') || '- None generated'}
 
-Immediate Actions:
-${generatedReport.value.actionPlan.immediate.map(a => `- ${a}`).join('\n')}
+=== ISSUE-SPECIFIC AI GUIDANCE ===
+${guidanceRows.map((issue) => `
+${issue.issue_title || issue.issue_type}
+Severity: ${issue.severity_level || 'N/A'}
+Observed: ${issue.observed_percent ?? 'N/A'}% (${issue.observed_minutes ?? 'N/A'} min)
+Definition: ${issue.definition || 'N/A'}
+Why It Matters: ${issue.why_matters || 'N/A'}
+Recommended Exercises:
+${(issue.recommended_exercises || []).map((exercise) => `- ${exercise}`).join('\n') || '- None'}
+Workstation Tips:
+${(issue.workstation_tips || []).map((tip) => `- ${tip}`).join('\n') || '- None'}
+`).join('\n')}
 
-Short-term (Week): 
-${generatedReport.value.actionPlan.shortTerm.map(a => `- ${a}`).join('\n')}
-
-Long-term (Month):
-${generatedReport.value.actionPlan.longTerm.map(a => `- ${a}`).join('\n')}
-
-Health Risk Assessment:
-${generatedReport.value.healthRiskAssessment}
+=== OVERALL WORKING TIPS ===
+${overallTips.map((tip) => `- ${tip}`).join('\n') || '- No additional tips generated'}
 `;
 
       const blob = new Blob([reportText], { type: 'text/plain' });
@@ -759,6 +971,8 @@ ${generatedReport.value.healthRiskAssessment}
       previousSessionReports,
       geminiSessionAnalysis,
       geminiVideoGroups,
+      topGeminiVideos,
+      targetedExerciseSearches,
       monitoringHistory,
       selectedHistorySessionId,
       isLoadingMonitoringHistory,
@@ -769,6 +983,7 @@ ${generatedReport.value.healthRiskAssessment}
       toastMessage,
       toastColor,
       hideStatusToast,
+      buildYoutubeSearchUrl,
       
       // Actions
       startSession,
@@ -1096,31 +1311,46 @@ ${generatedReport.value.healthRiskAssessment}
               Confirmed session score: {{ geminiSessionAnalysis.confirmedScore }}%
             </p>
 
+            <div v-if="topGeminiVideos.length" class="mb-4 p-3 bg-[var(--surface)] rounded-lg border border-[var(--border)]">
+              <h4 class="font-semibold text-[0.9rem] mb-2">Here are 3 relevant videos for your session:</h4>
+              <div class="flex flex-col gap-1 text-[0.85rem]">
+                <a
+                  v-for="video in topGeminiVideos"
+                  :key="video.videoId"
+                  :href="video.url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="underline text-[var(--accent2)]"
+                >
+                  {{ video.title }}
+                </a>
+              </div>
+            </div>
+
             <div v-if="geminiSessionAnalysis.recommendedExercises && geminiSessionAnalysis.recommendedExercises.length" class="mb-4">
               <h4 class="font-semibold text-[0.9rem] mb-2">Corrective Exercises</h4>
               <ul class="space-y-1 text-[0.85rem]">
                 <li v-for="exercise in geminiSessionAnalysis.recommendedExercises.slice(0, 5)" :key="exercise" class="text-[var(--muted)]">• {{ exercise }}</li>
               </ul>
-            </div>
 
-            <div v-if="geminiVideoGroups.length" class="space-y-3">
-              <div v-for="group in geminiVideoGroups.slice(0, 3)" :key="group.query" class="p-3 bg-[var(--surface)] rounded-lg border border-[var(--border)]">
-                <div class="text-[0.8rem] font-semibold mb-1">Search: {{ group.query }}</div>
-                <div v-if="group.reason" class="text-[0.75rem] text-[var(--muted)] mb-2">{{ group.reason }}</div>
-                <div class="flex flex-col gap-1 text-[0.8rem]">
-                  <a
-                    v-for="video in group.videos.slice(0, 3)"
-                    :key="video.videoId || video.url"
-                    :href="video.url"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="underline text-[var(--accent2)]"
-                  >
-                    {{ video.title }}
-                  </a>
-                </div>
+              <div v-if="targetedExerciseSearches.length" class="mt-3">
+                <h5 class="font-semibold text-[0.82rem] mb-1">Targeted exercise searches</h5>
+                <ul class="space-y-1 text-[0.8rem]">
+                  <li v-for="search in targetedExerciseSearches" :key="search.query" class="text-[var(--muted)]">
+                    <a
+                      :href="buildYoutubeSearchUrl(search.query)"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="underline text-[var(--accent2)]"
+                    >
+                      {{ search.query }}
+                    </a>
+                    <span v-if="search.reason"> — {{ search.reason }}</span>
+                  </li>
+                </ul>
               </div>
             </div>
+
           </div>
         </app-card>
 

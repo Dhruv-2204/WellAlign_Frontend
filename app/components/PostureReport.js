@@ -161,18 +161,12 @@ export const PostureReport = {
       <!-- Quality Breakdown -->
       <div class="p-6 bg-[var(--surface2)] rounded-xl border border-[var(--border)]">
         <h3 class="font-semibold text-[1.1rem] mb-4">Posture Quality Breakdown</h3>
-        <div class="grid grid-cols-4 gap-3">
+        <div class="grid grid-cols-3 gap-3">
           <div class="bg-[var(--surface)] p-4 rounded-lg border border-[var(--border)] text-center">
             <div class="text-[var(--accent)] font-['JetBrains_Mono'] text-[2rem] font-bold">
               {{ report.postureTimeDistribution?.GOOD || 0 }}%
             </div>
             <div class="text-[var(--muted)] text-[0.8rem] mt-1">Good</div>
-          </div>
-          <div class="bg-[var(--surface)] p-4 rounded-lg border border-[var(--border)] text-center">
-            <div class="text-[var(--accent2)] font-['JetBrains_Mono'] text-[2rem] font-bold">
-              {{ report.postureTimeDistribution?.WARNING || 0 }}%
-            </div>
-            <div class="text-[var(--muted)] text-[0.8rem] mt-1">Warning</div>
           </div>
           <div class="bg-[var(--surface)] p-4 rounded-lg border border-[var(--border)] text-center">
             <div class="text-[var(--warn)] font-['JetBrains_Mono'] text-[2rem] font-bold">
@@ -285,55 +279,14 @@ export const PostureReport = {
         </div>
       </div>
 
-      <!-- Action Plan Summary -->
-      <div v-if="report.actionPlan" class="p-6 bg-[rgba(106,249,224,0.05)] border-2 border-[var(--accent2)] rounded-xl">
-        <h3 class="font-semibold text-[1.1rem] mb-4 text-[var(--accent2)]">🎯 Your Action Plan</h3>
-        
-        <div class="grid grid-cols-3 gap-4">
-          <!-- Immediate -->
-          <div class="bg-[var(--surface)] p-4 rounded-lg border border-[var(--border)]">
-            <div class="text-[0.85rem] font-semibold text-[var(--muted)] mb-2">Today</div>
-            <ul class="space-y-1">
-              <li v-for="(action, i) in (report.actionPlan.immediate || []).slice(0, 2)" :key="i" class="text-[0.8rem] flex gap-1">
-                <span>•</span>
-                <span>{{ action }}</span>
-              </li>
-            </ul>
-          </div>
-
-          <!-- Short-term -->
-          <div class="bg-[var(--surface)] p-4 rounded-lg border border-[var(--border)]">
-            <div class="text-[0.85rem] font-semibold text-[var(--muted)] mb-2">This Week</div>
-            <ul class="space-y-1">
-              <li v-for="(action, i) in (report.actionPlan.shortTerm || []).slice(0, 2)" :key="i" class="text-[0.8rem] flex gap-1">
-                <span>•</span>
-                <span>{{ action }}</span>
-              </li>
-            </ul>
-          </div>
-
-          <!-- Long-term -->
-          <div class="bg-[var(--surface)] p-4 rounded-lg border border-[var(--border)]">
-            <div class="text-[0.85rem] font-semibold text-[var(--muted)] mb-2">This Month</div>
-            <ul class="space-y-1">
-              <li v-for="(action, i) in (report.actionPlan.longTerm || []).slice(0, 2)" :key="i" class="text-[0.8rem] flex gap-1">
-                <span>•</span>
-                <span>{{ action }}</span>
-              </li>
-            </ul>
-          </div>
-        </div>
-      </div>
-
-      <!-- Health Assessment Warning -->
-      <div v-if="report.healthRiskAssessment" class="p-6 bg-[rgba(239,68,68,0.1)] border-2 border-[var(--danger)] rounded-xl">
-        <div class="flex gap-3">
-          <div class="text-[1.5rem]">⚠️</div>
-          <div>
-            <h4 class="font-semibold text-[var(--danger)] mb-2">Health Assessment</h4>
-            <p class="text-[0.9rem]">{{ report.healthRiskAssessment }}</p>
-          </div>
-        </div>
+      <div v-if="report.overallWorkingTips && report.overallWorkingTips.length" class="p-6 bg-[var(--surface2)] border border-[var(--border)] rounded-xl">
+        <h3 class="font-semibold text-[1.1rem] mb-3">Overall Working Tips</h3>
+        <ul class="space-y-2 text-[0.9rem]">
+          <li v-for="(tip, idx) in report.overallWorkingTips" :key="'work-tip-' + idx" class="flex gap-2">
+            <span class="text-[var(--accent2)]">•</span>
+            <span>{{ tip }}</span>
+          </li>
+        </ul>
       </div>
 
       <!-- Action Buttons -->

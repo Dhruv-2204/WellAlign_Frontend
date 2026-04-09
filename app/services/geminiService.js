@@ -85,6 +85,9 @@ export async function analyzeMonitoringSessionWithGemini(sessionId) {
       ? Number(data.gemini_confirmed_score)
       : null,
     recommendedExercises: Array.isArray(data.recommended_exercises) ? data.recommended_exercises : [],
-    youtubeSearches: Array.isArray(data.youtube_searches) ? data.youtube_searches : []
+    issueGuidance: Array.isArray(data.issue_guidance) ? data.issue_guidance : [],
+    overallWorkingTips: Array.isArray(data.overall_working_tips) ? data.overall_working_tips : [],
+    youtubeSearches: Array.isArray(data.youtube_searches) ? data.youtube_searches : [],
+    youtubeVideoGroups: Array.isArray(data.youtube_video_groups) ? data.youtube_video_groups : []
   };
 }

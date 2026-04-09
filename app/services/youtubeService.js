@@ -1,5 +1,6 @@
 const YOUTUBE_SEARCH_URL = 'https://www.googleapis.com/youtube/v3/search';
 const YOUTUBE_KEY_STORAGE = 'wa-youtube-api-key';
+let hasWarnedMissingYoutubeKey = false;
 
 function getApiKey() {
   return window.WA_YOUTUBE_API_KEY || localStorage.getItem(YOUTUBE_KEY_STORAGE) || '';
@@ -22,7 +23,10 @@ export async function searchYouTubeVideos(query, maxResults = 3) {
 
   const apiKey = getApiKey();
   if (!apiKey) {
-    console.warn('YouTube API key missing: set window.WA_YOUTUBE_API_KEY or call setYouTubeApiKey() once.');
+    if (!hasWarnedMissingYoutubeKey) {
+      hasWarnedMissingYoutubeKey = true;
+      console.info('YouTube API key is not configured. Falling back to search-result links.');
+    }
     return [];
   }
 

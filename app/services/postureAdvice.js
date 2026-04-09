@@ -465,9 +465,10 @@ export function generateDetailedReport(session) {
     return {
       error: 'Insufficient session data',
       status: 'INSUFFICIENT_DATA',
-      postureTimeDistribution: { GOOD: 50, WARNING: 30, POOR: 15, CRITICAL: 5 },
+      postureTimeDistribution: { GOOD: 50, POOR: 35, CRITICAL: 15 },
       detailedIssues: [],
       overallScore: 0,
+      overallWorkingTips: [],
       actionPlan: { priority: [], immediate: ['Ensure camera is visible'], shortTerm: ['Try longer session'], longTerm: [] }
     };
   }
@@ -515,6 +516,7 @@ export function generateDetailedReport(session) {
     // Summary
     overallScore: calculateOverallScore(postureTimeDistribution),
     recommendationSummary: generateRecommendationSummary(issueAnalysis),
+    overallWorkingTips: [],
     
     // Generated timestamp
     generatedAt: new Date().toISOString()
@@ -529,14 +531,14 @@ export function generateDetailedReport(session) {
 function calculatePostureTimeDistribution(session) {
   const distribution = {
     GOOD: 0,
-    WARNING: 0,
     POOR: 0,
     CRITICAL: 0,
     UNKNOWN: 0
   };
 
   session.snapshots.forEach((snapshot) => {
-    const classification = snapshot.postures.classification || 'UNKNOWN';
+    const rawClassification = snapshot.postures.classification || 'UNKNOWN';
+    const classification = rawClassification === 'WARNING' ? 'POOR' : rawClassification;
     if (distribution.hasOwnProperty(classification)) {
       distribution[classification]++;
     } else {
@@ -548,7 +550,6 @@ function calculatePostureTimeDistribution(session) {
   const total = session.snapshots.length || 1;
   const result = {
     GOOD: total > 0 ? Math.round((distribution.GOOD / total) * 100) : 0,
-    WARNING: total > 0 ? Math.round((distribution.WARNING / total) * 100) : 0,
     POOR: total > 0 ? Math.round((distribution.POOR / total) * 100) : 0,
     CRITICAL: total > 0 ? Math.round((distribution.CRITICAL / total) * 100) : 0
   };
@@ -771,7 +772,6 @@ function calculateOverallScore(postureTimeDistribution) {
   // Deduct points based on bad posture time
   score -= (postureTimeDistribution.CRITICAL || 0) * 2;
   score -= (postureTimeDistribution.POOR || 0) * 1;
-  score -= (postureTimeDistribution.WARNING || 0) * 0.5;
 
   return Math.max(0, Math.round(score));
 }
