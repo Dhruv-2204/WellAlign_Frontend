@@ -59,6 +59,8 @@ export const DashboardView = {
     const monitoringStatus = computed(() => (monitoringState.isMonitoring ? 'ON' : 'OFF'));
     const lastSession = computed(() => monitoringState.lastSession);
     const latestAssessment = ref(null);
+    const assessmentHistory = ref([]);
+    const selectedTrendPeriod = ref('7D');
     const monitoringScore = computed(() => lastSession.value?.score ?? null);
     const assessmentScore = computed(() => {
       if (!latestAssessment.value) return null;
@@ -104,6 +106,7 @@ export const DashboardView = {
     async function loadLatestAssessment() {
       try {
         const history = await fetchAssessmentHistory();
+        assessmentHistory.value = Array.isArray(history) ? history : [];
         if (!history.length) {
           latestAssessment.value = null;
           return;
@@ -111,6 +114,7 @@ export const DashboardView = {
         latestAssessment.value = formatAssessmentForHistory(history[0]);
       } catch (error) {
         console.error('Failed to load latest assessment:', error);
+        assessmentHistory.value = [];
         latestAssessment.value = null;
       }
     }
@@ -136,6 +140,90 @@ export const DashboardView = {
 
     let timerInterval = null;
     let chartInstance = null;
+
+    function toDayKey(dateValue) {
+      const d = new Date(dateValue);
+      if (Number.isNaN(d.getTime())) return null;
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    }
+
+    function parseScore(assessment) {
+      const raw = assessment?.overall_score ?? assessment?.score;
+      const numeric = Number(raw);
+      return Number.isFinite(numeric) ? Math.max(0, Math.min(100, Math.round(numeric))) : null;
+    }
+
+    function makeLatestAssessmentMap(assessmentRows) {
+      const sorted = [...assessmentRows].sort((a, b) => {
+        const aTime = new Date(a.createdAt || a.timestamp || 0).getTime();
+        const bTime = new Date(b.createdAt || b.timestamp || 0).getTime();
+        return bTime - aTime;
+      });
+
+      const latestByDay = new Map();
+      sorted.forEach((item) => {
+        const key = toDayKey(item.createdAt || item.timestamp);
+        if (!key || latestByDay.has(key)) return;
+        const score = parseScore(item);
+        if (score === null) return;
+        latestByDay.set(key, {
+          score,
+          createdAt: item.createdAt || item.timestamp
+        });
+      });
+
+      return latestByDay;
+    }
+
+    function getWindowEndingTomorrow(daysCount) {
+      const tomorrow = new Date();
+      tomorrow.setHours(0, 0, 0, 0);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      const start = new Date(tomorrow);
+      start.setDate(tomorrow.getDate() - (daysCount - 1));
+
+      const days = [];
+      for (let i = 0; i < daysCount; i += 1) {
+        const d = new Date(start);
+        d.setDate(start.getDate() + i);
+        days.push(d);
+      }
+      return days;
+    }
+
+    function buildChartRows(days, latestByDay) {
+      return days.map((dateValue) => {
+        const key = toDayKey(dateValue);
+        const latest = latestByDay.get(key);
+        const isAbsent = !latest;
+
+        return {
+          shortDate: dateValue.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+          score: latest ? latest.score : 0,
+          isAbsent
+        };
+      });
+    }
+
+    function getTrendLength() {
+      if (selectedTrendPeriod.value === '30D') return 30;
+      if (selectedTrendPeriod.value === '90D') return 90;
+      return 7;
+    }
+
+    function getTrendChartData() {
+      const latestByDay = makeLatestAssessmentMap(assessmentHistory.value);
+      const rows = buildChartRows(getWindowEndingTomorrow(getTrendLength()), latestByDay);
+      return {
+        labels: rows.map((row) => row.shortDate),
+        data: rows.map((row) => row.score),
+        absent: rows.map((row) => row.isAbsent)
+      };
+    }
 
     function updateTimer() {
       const h = String(Math.floor(seconds.value / 3600)).padStart(2, '0');
@@ -281,20 +369,26 @@ export const DashboardView = {
       gradient.addColorStop(0, 'rgba(200, 249, 106, 0.25)');
       gradient.addColorStop(1, 'rgba(200, 249, 106, 0.01)');
 
+      const trendData = getTrendChartData();
+
+      if (chartInstance) {
+        chartInstance.destroy();
+      }
+
       chartInstance = new Chart(canvas, {
         type: 'line',
         data: {
-          labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+          labels: trendData.labels,
           datasets: [{
             label: 'Posture Score',
-            data: [65, 72, 68, 78, 75, 82, 84],
+            data: trendData.data,
             borderColor: '#10b981',
             borderWidth: 2.5,
             backgroundColor: gradient,
             fill: true,
             tension: 0.45,
             pointRadius: 4,
-            pointBackgroundColor: '#10b981',
+            pointBackgroundColor: (ctx) => trendData.absent[ctx.dataIndex] ? '#6b7280' : '#10b981',
             pointBorderColor: '#0d0f14',
             pointBorderWidth: 2
           }]
@@ -312,7 +406,10 @@ export const DashboardView = {
               bodyColor: '#e8eaf0',
               padding: 10,
               callbacks: {
-                label: (point) => `Score: ${point.parsed.y}%`
+                label: (point) => {
+                  const isAbsent = trendData.absent[point.dataIndex];
+                  return isAbsent ? 'Absent - posture score not taken' : `Score: ${point.parsed.y}%`;
+                }
               }
             }
           },
@@ -322,7 +419,7 @@ export const DashboardView = {
               ticks: { color: '#6b7280', font: { family: 'DM Sans', size: 11 } }
             },
             y: {
-              min: 45,
+              min: 0,
               max: 100,
               grid: { color: 'rgba(255,255,255,0.04)' },
               ticks: {
@@ -349,6 +446,10 @@ export const DashboardView = {
       nextTick(() => initChart());
     });
 
+    Vue.watch(selectedTrendPeriod, () => {
+      nextTick(() => initChart());
+    });
+
     onBeforeUnmount(() => {
       if (timerInterval) clearInterval(timerInterval);
       if (chartInstance) chartInstance.destroy();
@@ -369,6 +470,7 @@ export const DashboardView = {
       toastTitle,
       toastMessage,
       backendStatus,
+      selectedTrendPeriod,
       startSession,
       endSession,
       hideStatusToast,
@@ -480,11 +582,26 @@ export const DashboardView = {
 
         <div class="card delay-[250ms]">
           <div class="section-header">
-            <div class="section-title">Weekly Progress History</div>
+            <div>
+              <div class="section-title">Progress History</div>
+              <p class="text-[0.72rem] text-[var(--muted)] mt-1">Source: Assess page submissions (not live monitoring)</p>
+            </div>
             <div class="flex gap-2">
-              <span class="badge badge-muted cursor-pointer">7D</span>
-              <span class="badge badge-green cursor-pointer">30D</span>
-              <span class="badge badge-muted cursor-pointer">90D</span>
+              <span
+                @click="selectedTrendPeriod = '7D'"
+                class="badge cursor-pointer"
+                :class="selectedTrendPeriod === '7D' ? 'badge-green' : 'badge-muted'"
+              >7D</span>
+              <span
+                @click="selectedTrendPeriod = '30D'"
+                class="badge cursor-pointer"
+                :class="selectedTrendPeriod === '30D' ? 'badge-green' : 'badge-muted'"
+              >30D</span>
+              <span
+                @click="selectedTrendPeriod = '90D'"
+                class="badge cursor-pointer"
+                :class="selectedTrendPeriod === '90D' ? 'badge-green' : 'badge-muted'"
+              >90D</span>
             </div>
           </div>
           <div class="chart-container">

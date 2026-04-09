@@ -20,50 +20,22 @@ export const ProgressHubView = {
       hideStatusToast
     } = useStatusToast(3200);
 
-    // ===== TODAY'S PLAN =====
-    const todaysPlan = ref([
-      {
-        id: 1,
-        title: 'Neck flexor activation',
-        volume: '3 x 12',
-        description: 'Supine chin tucks with 3s holds.',
-        completed: false
-      },
-      {
-        id: 2,
-        title: 'Thoracic extension',
-        volume: '2 x 10',
-        description: 'Foam roll mid-back, slow controlled.',
-        completed: false
-      },
-      {
-        id: 3,
-        title: 'Scapular retraction',
-        volume: '3 x 15',
-        description: 'Band rows focusing on mid traps.',
-        completed: false
-      }
-    ]);
-
-
-
     // ===== PROGRESS DATA (Assessment page source, not live monitoring) =====
     const weeklyData = ref([]);
     const sessionHistory = ref([]);
 
     // ===== COMPUTED PROPERTIES =====
-    const completedCount = computed(() => todaysPlan.value.filter((item) => item.completed).length);
-
-    const planAdherenceRate = computed(() => {
+    const daysRecordedRate = computed(() => {
       if (!weeklyData.value.length) return 0;
       const taken = weeklyData.value.filter((day) => !day.isAbsent).length;
       return Math.round((taken / weeklyData.value.length) * 100);
     });
 
-    const averageScore = computed(() => {
-      if (!weeklyData.value.length) return 0;
-      const sum = weeklyData.value.reduce((acc, day) => acc + day.score, 0);
-      return Math.round(sum / weeklyData.value.length);
+    const averageRecordedScore = computed(() => {
+      const recordedDays = weeklyData.value.filter((day) => !day.isAbsent);
+      if (!recordedDays.length) return 0;
+      const sum = recordedDays.reduce((acc, day) => acc + day.score, 0);
+      return Math.round(sum / recordedDays.length);
     });
 
     const takenDaysCount = computed(() => weeklyData.value.filter((day) => !day.isAbsent).length);
@@ -225,13 +197,6 @@ export const ProgressHubView = {
       sessionHistory.value = buildRecentAssessEntries(assessments.value);
     }
 
-    // ===== METHODS =====
-    function toggleTask(task) {
-      task.completed = !task.completed;
-      const state = task.completed ? 'completed' : 'marked as pending';
-      showStatusToast('Plan Updated', `${task.title} ${state}.`);
-    }
-
     function getChartData() {
       if (selectedPeriod.value === '7D') {
         const days = weeklyData.value.length ? weeklyData.value : buildDayScoreRows(getSevenDayWindowEndingTomorrow(), new Map());
@@ -358,16 +323,12 @@ export const ProgressHubView = {
       showToast,
       toastTitle,
       toastMessage,
-      // Plan
-      todaysPlan,
-      completedCount,
-      toggleTask,
       // Progress
       weeklyData,
       sessionHistory,
       backendSyncStatus,
-      averageScore,
-      planAdherenceRate,
+      averageRecordedScore,
+      daysRecordedRate,
       takenDaysCount,
       hideStatusToast
     };
@@ -378,41 +339,12 @@ export const ProgressHubView = {
         <div class="flex items-center justify-between">
           <div>
             <h1 class="font-[Syne] text-[2.2rem] font-extrabold mb-2">Progress Hub</h1>
-            <p class="text-[var(--muted)] text-[0.95rem]">Your daily plan & posture progress in one view</p>
-            <p class="text-[0.75rem] text-[var(--muted)] mt-1">Weekly progress is sourced from Assess page submissions, not live monitoring.</p>
+            <p class="text-[var(--muted)] text-[0.95rem]">Your posture progress in one view</p>
             <p class="text-[0.75rem] text-[var(--muted)] mt-2">{{ backendSyncStatus }}</p>
           </div>
 
         </div>
       </app-card>
-    </div>
-
-    <!-- TODAY'S PLAN SECTION (TOP PRIORITY) -->
-    <div class="card delay-[100ms]">
-      <div class="flex items-center justify-between mb-4">
-        <div class="section-header flex-1">
-          <div class="section-title">📋 Today's Plan</div>
-        </div>
-        <span class="badge badge-green">{{ completedCount }}/{{ todaysPlan.length }} Complete</span>
-      </div>
-
-      <div class="flex flex-col gap-3">
-        <div
-          v-for="item in todaysPlan"
-          :key="item.id"
-          class="p-4 bg-[var(--surface2)] rounded-lg border border-[var(--border)] cursor-pointer transition-all hover:border-[var(--accent)]"
-          :class="{ 'opacity-60': item.completed }"
-          @click="toggleTask(item)"
-        >
-          <div class="flex justify-between items-start">
-            <div class="flex-1">
-              <div class="font-semibold text-[0.95rem]" :class="{ 'line-through': item.completed }">{{ item.title }}</div>
-              <p class="text-[var(--muted)] text-sm mt-1">{{ item.description }}</p>
-            </div>
-            <span class="badge ml-3" :class="item.completed ? 'badge-green' : 'badge-muted'">{{ item.completed ? '✓ Done' : item.volume }}</span>
-          </div>
-        </div>
-      </div>
     </div>
 
     <!-- MAIN GRID: PROGRESS + SIDEBAR -->
@@ -421,7 +353,10 @@ export const ProgressHubView = {
         <!-- CHART -->
         <div class="card delay-[150ms]">
           <div class="section-header">
-            <div class="section-title">Posture Score Trend</div>
+            <div>
+              <div class="section-title">Posture Score Trend</div>
+              <p class="text-[0.72rem] text-[var(--muted)] mt-1">Source: Assess page submissions (not live monitoring)</p>
+            </div>
             <div class="flex gap-2">
               <span @click="selectedPeriod = '7D'" :class="{['badge-green']: selectedPeriod === '7D', ['badge-muted']: selectedPeriod !== '7D'}" class="badge cursor-pointer">7D</span>
               <span @click="selectedPeriod = '30D'" :class="{['badge-green']: selectedPeriod === '30D', ['badge-muted']: selectedPeriod !== '30D'}" class="badge cursor-pointer">30D</span>
@@ -436,7 +371,7 @@ export const ProgressHubView = {
         <div class="card delay-[200ms]">
           <div class="section-header">
             <div class="section-title">Weekly Breakdown</div>
-            <span class="badge badge-green">{{ planAdherenceRate }}% Days Recorded</span>
+            <span class="badge badge-green">{{ daysRecordedRate }}% Days Recorded</span>
           </div>
 
           <div class="grid grid-cols-7 gap-2">
@@ -486,16 +421,12 @@ export const ProgressHubView = {
 
           <div class="flex flex-col gap-3">
             <div class="p-3 bg-[var(--surface2)] rounded-lg border-l-[0.1875rem] border-[var(--accent)]">
-              <div class="card-label">Average Score</div>
-              <div class="card-value text-2xl text-[var(--accent)]">{{ averageScore }}%</div>
+              <div class="card-label">Average of Recorded Days</div>
+              <div class="card-value text-2xl text-[var(--accent)]">{{ averageRecordedScore }}%</div>
             </div>
             <div class="p-3 bg-[var(--surface2)] rounded-lg border-l-[0.1875rem] border-[var(--warn)]">
-              <div class="card-label">Days Recorded</div>
+              <div class="card-label">Coverage</div>
               <div class="card-value text-2xl text-[var(--warn)]">{{ takenDaysCount }}/7</div>
-            </div>
-            <div class="p-3 bg-[var(--surface2)] rounded-lg border-l-[0.1875rem] border-[var(--success)]">
-              <div class="card-label">Source</div>
-              <div class="card-value text-[1.1rem]">Assess Page Data</div>
             </div>
           </div>
         </div>
