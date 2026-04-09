@@ -54,7 +54,7 @@ export const MonitoringView = {
     PostureReport
   },
   setup() {
-    const { ref, computed, onMounted, onBeforeUnmount } = Vue;
+    const { ref, computed, watch, onMounted, onBeforeUnmount } = Vue;
     const { useRoute } = VueRouter;
     const route = useRoute();
 
@@ -67,7 +67,7 @@ export const MonitoringView = {
       shoulderAsymmetry: false,
       headTilt: false
     });
-    const showOnScreenAlerts = ref(false);
+    const soundEnabled = ref(true);
     const timedSessionTotalSeconds = ref(null);
     
     // Monitoring State
@@ -181,6 +181,9 @@ export const MonitoringView = {
     const previousSessionReports = ref([]);
     const geminiSessionAnalysis = ref(null);
     const geminiVideoGroups = ref([]);
+    const monitoringHistory = ref([]);
+    const selectedHistorySessionId = ref(null);
+    const isLoadingMonitoringHistory = ref(false);
     
     // Status and Toast
     const {
@@ -196,6 +199,8 @@ export const MonitoringView = {
     let currentSession = null;
     let recordingIntervalId = null;
     let timerIntervalId = null;
+    let audioCtx = null;
+    let lastAlertSoundAt = 0;
 
     const sessionLabel = computed(() => Number.isFinite(selectedDuration.value)
       ? `${selectedDuration.value} minute timed session`
@@ -205,6 +210,117 @@ export const MonitoringView = {
       if (!response || typeof response !== 'object') return response;
       if (response.success && response.data !== undefined) return response.data;
       return response.data !== undefined ? response.data : response;
+    }
+
+    function playAlertTone() {
+      if (!soundEnabled.value) return;
+      const now = Date.now();
+      if (now - lastAlertSoundAt < 2500) return;
+      lastAlertSoundAt = now;
+
+      try {
+        if (!audioCtx) {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          if (!AC) return;
+          audioCtx = new AC();
+        }
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 740;
+        gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.05, audioCtx.currentTime + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.2);
+
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.22);
+      } catch (err) {
+        console.warn('Alert tone playback failed:', err);
+      }
+    }
+
+    function toggleSoundEnabled() {
+      soundEnabled.value = !soundEnabled.value;
+      showStatusToast(
+        'Alert Sound',
+        soundEnabled.value ? 'Alert sounds enabled.' : 'Alert sounds muted.',
+        soundEnabled.value ? 'var(--accent)' : 'var(--muted)'
+      );
+    }
+
+    function formatDuration(durationSec) {
+      const total = Math.max(0, Math.round(Number(durationSec) || 0));
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      const s = total % 60;
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    }
+
+    function getSessionScoreTone(score) {
+      if (!Number.isFinite(score)) return 'var(--muted)';
+      if (score >= 80) return 'var(--accent)';
+      if (score >= 60) return 'var(--warn)';
+      return 'var(--danger)';
+    }
+
+    function mapMonitoringHistoryItem(session) {
+      const startedAtValue = session?.startedAt || session?.startTime || session?.createdAt || null;
+      const endedAtValue = session?.endedAt || session?.endTime || session?.completedAt || null;
+      const started = startedAtValue ? new Date(startedAtValue) : null;
+      const ended = endedAtValue ? new Date(endedAtValue) : null;
+      const score = Number(session?.score ?? session?.summary?.goodPercentage ?? null);
+      const validScore = Number.isFinite(score) ? Math.max(0, Math.min(100, Math.round(score))) : null;
+      const alerts = Array.isArray(session?.alerts)
+        ? session.alerts
+        : Object.keys(session?.summary?.issueFlags || {});
+
+      return {
+        id: session?._id || session?.id || `${session?.startedAt || Date.now()}`,
+        startedLabel: started && !Number.isNaN(started.getTime())
+          ? started.toLocaleString()
+          : 'Unknown start',
+        endedLabel: ended && !Number.isNaN(ended.getTime())
+          ? ended.toLocaleString()
+          : 'Unknown end',
+        durationLabel: formatDuration(session?.durationSec ?? session?.duration),
+        score: validScore,
+        scoreTone: getSessionScoreTone(validScore),
+        alerts,
+        geminiAnalysis: session?.gemini_analysis || '',
+        recommendedExercises: Array.isArray(session?.recommended_exercises) ? session.recommended_exercises : [],
+        youtubeSearches: Array.isArray(session?.youtube_searches) ? session.youtube_searches : []
+      };
+    }
+
+    async function loadMonitoringHistory() {
+      isLoadingMonitoringHistory.value = true;
+      try {
+        const payload = await api.monitoringSessions.list();
+        const rows = unwrapData(payload);
+        monitoringHistory.value = Array.isArray(rows)
+          ? rows.map(mapMonitoringHistoryItem)
+          : [];
+      } catch (err) {
+        console.error('Failed to load monitoring history:', err);
+        const localRows = getSessionHistoryList();
+        monitoringHistory.value = Array.isArray(localRows)
+          ? localRows.map(mapMonitoringHistoryItem)
+          : [];
+      } finally {
+        isLoadingMonitoringHistory.value = false;
+      }
+    }
+
+    function toggleHistorySession(sessionId) {
+      selectedHistorySessionId.value = selectedHistorySessionId.value === sessionId ? null : sessionId;
     }
 
     async function persistAndAnalyzeSession(finalSession, report) {
@@ -235,7 +351,17 @@ export const MonitoringView = {
 
       geminiSessionAnalysis.value = geminiResult;
       geminiVideoGroups.value = videoGroups;
+      await loadMonitoringHistory();
     }
+
+    watch(activeScreenAlerts, (alerts, previousAlerts) => {
+      if (!isSessionActive.value) return;
+      const hasAlerts = Array.isArray(alerts) && alerts.length > 0;
+      const hadAlerts = Array.isArray(previousAlerts) && previousAlerts.length > 0;
+      if (hasAlerts && !hadAlerts) {
+        playAlertTone();
+      }
+    });
 
     // ========== SESSION SETUP ==========
     function startSession() {
@@ -265,7 +391,7 @@ export const MonitoringView = {
       startTimers();
 
       // NOW start camera (callback already ready)
-      window.setOverlayEnabled?.(showOnScreenAlerts.value);
+      window.setOverlayEnabled?.(true);
       window.startCamera?.();
       showStatusToast('Session Started', 'Posture monitoring is active.', 'var(--accent)');
     }
@@ -523,6 +649,7 @@ ${generatedReport.value.healthRiskAssessment}
     // ========== LIFECYCLE ==========
     onMounted(async () => {
       await ensureMediaPipeScripts();
+      await loadMonitoringHistory();
       backendStatus.value = await checkBackendHealth({
         successMessage: 'Monitoring services ready',
         unavailableMessage: 'Monitoring view loaded (backend unavailable)'
@@ -548,7 +675,7 @@ ${generatedReport.value.healthRiskAssessment}
           }
         }
 
-      window.setOverlayEnabled?.(showOnScreenAlerts.value);
+      window.setOverlayEnabled?.(true);
       }
     });
 
@@ -567,7 +694,7 @@ ${generatedReport.value.healthRiskAssessment}
       selectedDuration,
       postureHoldSeconds,
       enabledAlerts,
-      showOnScreenAlerts,
+      soundEnabled,
       sessionLabel,
       
       // Monitoring
@@ -588,6 +715,9 @@ ${generatedReport.value.healthRiskAssessment}
       previousSessionReports,
       geminiSessionAnalysis,
       geminiVideoGroups,
+      monitoringHistory,
+      selectedHistorySessionId,
+      isLoadingMonitoringHistory,
       
       // Toast
       showToast,
@@ -601,7 +731,9 @@ ${generatedReport.value.healthRiskAssessment}
       endSession,
       downloadReport,
       startNewSession,
-      goToDashboard
+      goToDashboard,
+      toggleHistorySession,
+      toggleSoundEnabled
     };
   },
   template: `
@@ -666,11 +798,19 @@ ${generatedReport.value.healthRiskAssessment}
               <span>Head Tilt</span>
             </label>
           </div>
-          <label class="flex items-center gap-2 mt-4 text-[0.9rem]">
-            <input type="checkbox" v-model="showOnScreenAlerts" />
-            <span>Show on-screen overlay alerts</span>
-          </label>
-          <p class="text-[0.78rem] text-[var(--muted)] mt-2">Default is off. Enable this if you want visual alert overlays while monitoring.</p>
+          <div class="mt-4 flex items-center justify-between gap-3 p-3 bg-[var(--surface)] rounded-lg border border-[var(--border)]">
+            <div>
+              <div class="text-[0.9rem] font-semibold">Alert Sound</div>
+              <p class="text-[0.78rem] text-[var(--muted)]">Visual overlays show automatically when enabled alert types are detected.</p>
+            </div>
+            <button
+              @click="toggleSoundEnabled"
+              class="btn-calibrate mt-0 px-4 py-2"
+              :class="soundEnabled ? 'btn-emphasis btn-emphasis-accent' : 'bg-[var(--surface2)] text-[var(--text)]'"
+            >
+              {{ soundEnabled ? 'Sound ON' : 'Sound OFF' }}
+            </button>
+          </div>
         </div>
 
         <!-- Action Buttons -->
@@ -683,6 +823,77 @@ ${generatedReport.value.healthRiskAssessment}
         <!-- Info Box -->
         <div class="mt-8 p-4 bg-[var(--surface2)] border border-[var(--border)] rounded-xl text-[0.9rem] text-[var(--muted)]">
           <strong>📷 Camera Permission Required:</strong> Make sure your camera is enabled in browser settings. WellAlign uses your camera only to analyze your posture—no video is recorded.
+        </div>
+      </app-card>
+
+      <app-card class="mt-6" title="Monitoring History" badge="Auto-synced" badge-class="badge badge-green">
+        <div v-if="isLoadingMonitoringHistory" class="text-center py-6 text-[var(--muted)]">
+          <p>Loading monitoring history...</p>
+        </div>
+
+        <div v-else-if="monitoringHistory.length === 0" class="text-center py-6 text-[var(--muted)]">
+          <p>No monitoring sessions yet. Complete one to view history.</p>
+        </div>
+
+        <div v-else class="space-y-2">
+          <div
+            v-for="item in monitoringHistory"
+            :key="item.id"
+            class="assess-history-card"
+            @click="toggleHistorySession(item.id)"
+          >
+            <div class="assess-history-main">
+              <div>
+                <div class="font-semibold">{{ item.startedLabel }}</div>
+                <div class="text-sm text-[var(--muted)]">Duration: {{ item.durationLabel }}</div>
+              </div>
+              <div class="assess-history-scores">
+                <div class="text-center">
+                  <span class="text-[0.75rem] text-[var(--muted)]">Score</span>
+                  <span class="font-bold text-sm" :style="{ color: item.scoreTone }">{{ item.score !== null ? item.score + '%' : 'N/A' }}</span>
+                </div>
+                <div class="text-center">
+                  <span class="text-[0.75rem] text-[var(--muted)]">Alerts</span>
+                  <span class="font-bold text-sm">{{ item.alerts.length }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="assess-history-status">
+              <span class="badge" :class="item.score !== null && item.score >= 80 ? 'badge-green' : item.score !== null && item.score >= 60 ? 'badge-muted' : 'badge'">
+                {{ item.score !== null ? 'RECORDED' : 'NO SCORE' }}
+              </span>
+            </div>
+
+            <div v-if="selectedHistorySessionId === item.id" class="assess-history-details">
+              <div class="mt-3">
+                <p class="font-semibold text-[0.9rem] mb-2">Session Window</p>
+                <ul class="space-y-1 text-[0.85rem] text-[var(--muted)]">
+                  <li>• Started: {{ item.startedLabel }}</li>
+                  <li>• Ended: {{ item.endedLabel }}</li>
+                </ul>
+              </div>
+
+              <div v-if="item.alerts.length" class="mt-3">
+                <p class="font-semibold text-[0.9rem] mb-2">Detected Alerts</p>
+                <ul class="space-y-1 text-[0.85rem]">
+                  <li v-for="(alert, idx) in item.alerts" :key="idx" class="text-[var(--muted)]">• {{ alert }}</li>
+                </ul>
+              </div>
+
+              <div v-if="item.recommendedExercises.length" class="mt-3">
+                <p class="font-semibold text-[0.9rem] mb-2">Recommended Exercises</p>
+                <ul class="space-y-1 text-[0.85rem]">
+                  <li v-for="(exercise, idx) in item.recommendedExercises.slice(0, 5)" :key="idx" class="text-[var(--muted)]">• {{ exercise }}</li>
+                </ul>
+              </div>
+
+              <div v-if="item.geminiAnalysis" class="mt-3">
+                <p class="font-semibold text-[0.9rem] mb-2">AI Session Review</p>
+                <p class="text-[0.85rem] text-[var(--muted)]">{{ item.geminiAnalysis }}</p>
+              </div>
+            </div>
+          </div>
         </div>
       </app-card>
     </div>
@@ -729,7 +940,7 @@ ${generatedReport.value.healthRiskAssessment}
               <span></span><span></span><span></span><span></span>
             </div>
 
-            <div v-if="showOnScreenAlerts && activeScreenAlerts.length" class="absolute inset-0 z-20 bg-[rgba(239,68,68,0.18)] border border-[rgba(239,68,68,0.55)] flex items-center justify-center p-4 text-center">
+            <div v-if="activeScreenAlerts.length" class="absolute inset-0 z-20 bg-[rgba(239,68,68,0.18)] border border-[rgba(239,68,68,0.55)] flex items-center justify-center p-4 text-center">
               <div class="bg-[rgba(9,9,11,0.78)] text-white px-4 py-3 rounded-lg text-[0.95rem]">
                 {{ activeScreenAlerts.join(' • ') }}
               </div>
@@ -848,6 +1059,77 @@ ${generatedReport.value.healthRiskAssessment}
                   >
                     {{ video.title }}
                   </a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </app-card>
+
+        <app-card class="mt-6" title="Monitoring History" badge="Auto-synced" badge-class="badge badge-green">
+          <div v-if="isLoadingMonitoringHistory" class="text-center py-6 text-[var(--muted)]">
+            <p>Loading monitoring history...</p>
+          </div>
+
+          <div v-else-if="monitoringHistory.length === 0" class="text-center py-6 text-[var(--muted)]">
+            <p>No monitoring sessions yet. Complete one to view history.</p>
+          </div>
+
+          <div v-else class="space-y-2">
+            <div
+              v-for="item in monitoringHistory"
+              :key="item.id"
+              class="assess-history-card"
+              @click="toggleHistorySession(item.id)"
+            >
+              <div class="assess-history-main">
+                <div>
+                  <div class="font-semibold">{{ item.startedLabel }}</div>
+                  <div class="text-sm text-[var(--muted)]">Duration: {{ item.durationLabel }}</div>
+                </div>
+                <div class="assess-history-scores">
+                  <div class="text-center">
+                    <span class="text-[0.75rem] text-[var(--muted)]">Score</span>
+                    <span class="font-bold text-sm" :style="{ color: item.scoreTone }">{{ item.score !== null ? item.score + '%' : 'N/A' }}</span>
+                  </div>
+                  <div class="text-center">
+                    <span class="text-[0.75rem] text-[var(--muted)]">Alerts</span>
+                    <span class="font-bold text-sm">{{ item.alerts.length }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="assess-history-status">
+                <span class="badge" :class="item.score !== null && item.score >= 80 ? 'badge-green' : item.score !== null && item.score >= 60 ? 'badge-muted' : 'badge'">
+                  {{ item.score !== null ? 'RECORDED' : 'NO SCORE' }}
+                </span>
+              </div>
+
+              <div v-if="selectedHistorySessionId === item.id" class="assess-history-details">
+                <div class="mt-3">
+                  <p class="font-semibold text-[0.9rem] mb-2">Session Window</p>
+                  <ul class="space-y-1 text-[0.85rem] text-[var(--muted)]">
+                    <li>• Started: {{ item.startedLabel }}</li>
+                    <li>• Ended: {{ item.endedLabel }}</li>
+                  </ul>
+                </div>
+
+                <div v-if="item.alerts.length" class="mt-3">
+                  <p class="font-semibold text-[0.9rem] mb-2">Detected Alerts</p>
+                  <ul class="space-y-1 text-[0.85rem]">
+                    <li v-for="(alert, idx) in item.alerts" :key="idx" class="text-[var(--muted)]">• {{ alert }}</li>
+                  </ul>
+                </div>
+
+                <div v-if="item.recommendedExercises.length" class="mt-3">
+                  <p class="font-semibold text-[0.9rem] mb-2">Recommended Exercises</p>
+                  <ul class="space-y-1 text-[0.85rem]">
+                    <li v-for="(exercise, idx) in item.recommendedExercises.slice(0, 5)" :key="idx" class="text-[var(--muted)]">• {{ exercise }}</li>
+                  </ul>
+                </div>
+
+                <div v-if="item.geminiAnalysis" class="mt-3">
+                  <p class="font-semibold text-[0.9rem] mb-2">AI Session Review</p>
+                  <p class="text-[0.85rem] text-[var(--muted)]">{{ item.geminiAnalysis }}</p>
                 </div>
               </div>
             </div>
