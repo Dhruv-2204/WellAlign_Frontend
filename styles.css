@@ -642,6 +642,12 @@ main {
   max-height: 85vh;
 }
 
+/* Live monitoring can opt into a larger viewport without affecting other camera blocks. */
+.camera-feed.monitoring-camera-feed {
+  min-height: min(34rem, 68vh);
+  max-height: 92vh;
+}
+
 .camera-feed video,
 .camera-feed canvas {
   position: absolute;
@@ -725,12 +731,22 @@ main {
     min-height: min(18rem, 45vh);
     max-height: 90vh;
   }
+
+  .camera-feed.monitoring-camera-feed {
+    min-height: min(26rem, 56vh);
+    max-height: 90vh;
+  }
 }
 
 @media (max-height: 40rem) {
   .camera-feed {
     min-height: min(15rem, 40vh);
     max-height: 60vh;
+  }
+
+  .camera-feed.monitoring-camera-feed {
+    min-height: min(20rem, 52vh);
+    max-height: 72vh;
   }
 }
 
@@ -1332,6 +1348,16 @@ main {
 
 .assess-warning-banner svg {
   flex-shrink: 0;
+}
+
+.theme-light .assess-warning-banner {
+  background: #fff4e6;
+  border-color: #f59e0b;
+  color: #7a3e00;
+}
+
+.theme-light .assess-warning-banner strong {
+  color: #5f2f00;
 }
 
 .assess-scores-grid {

@@ -48,6 +48,8 @@ async function ensureMediaPipeScripts() {
   return window.__monitoringScriptsPromise;
 }
 
+const MONITORING_UI_SETTINGS_KEY = 'wa-monitoring-ui-settings';
+
 
 export const MonitoringView = {
   components: {
@@ -212,6 +214,42 @@ export const MonitoringView = {
       return response.data !== undefined ? response.data : response;
     }
 
+    function loadUiSettings() {
+      try {
+        const raw = localStorage.getItem(MONITORING_UI_SETTINGS_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          if (typeof parsed.soundEnabled === 'boolean') {
+            soundEnabled.value = parsed.soundEnabled;
+          }
+          if (parsed.enabledAlerts && typeof parsed.enabledAlerts === 'object') {
+            enabledAlerts.value = {
+              screenDistance: Boolean(parsed.enabledAlerts.screenDistance),
+              shoulderAsymmetry: Boolean(parsed.enabledAlerts.shoulderAsymmetry),
+              headTilt: Boolean(parsed.enabledAlerts.headTilt)
+            };
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to load monitoring UI settings:', err);
+      }
+    }
+
+    function persistUiSettings() {
+      try {
+        localStorage.setItem(
+          MONITORING_UI_SETTINGS_KEY,
+          JSON.stringify({
+            soundEnabled: soundEnabled.value,
+            enabledAlerts: enabledAlerts.value
+          })
+        );
+      } catch (err) {
+        console.warn('Failed to persist monitoring UI settings:', err);
+      }
+    }
+
     function playAlertTone() {
       if (!soundEnabled.value) return;
       const now = Date.now();
@@ -243,15 +281,6 @@ export const MonitoringView = {
       } catch (err) {
         console.warn('Alert tone playback failed:', err);
       }
-    }
-
-    function toggleSoundEnabled() {
-      soundEnabled.value = !soundEnabled.value;
-      showStatusToast(
-        'Alert Sound',
-        soundEnabled.value ? 'Alert sounds enabled.' : 'Alert sounds muted.',
-        soundEnabled.value ? 'var(--accent)' : 'var(--muted)'
-      );
     }
 
     function formatDuration(durationSec) {
@@ -362,6 +391,20 @@ export const MonitoringView = {
         playAlertTone();
       }
     });
+
+    watch(soundEnabled, (enabled, oldValue) => {
+      persistUiSettings();
+      if (oldValue === undefined || enabled === oldValue) return;
+      showStatusToast(
+        'Alert Sound',
+        enabled ? 'Alert sounds enabled.' : 'Alert sounds muted.',
+        enabled ? 'var(--accent)' : 'var(--muted)'
+      );
+    });
+
+    watch(enabledAlerts, () => {
+      persistUiSettings();
+    }, { deep: true });
 
     // ========== SESSION SETUP ==========
     function startSession() {
@@ -649,6 +692,7 @@ ${generatedReport.value.healthRiskAssessment}
     // ========== LIFECYCLE ==========
     onMounted(async () => {
       await ensureMediaPipeScripts();
+      loadUiSettings();
       await loadMonitoringHistory();
       backendStatus.value = await checkBackendHealth({
         successMessage: 'Monitoring services ready',
@@ -732,8 +776,7 @@ ${generatedReport.value.healthRiskAssessment}
       downloadReport,
       startNewSession,
       goToDashboard,
-      toggleHistorySession,
-      toggleSoundEnabled
+      toggleHistorySession
     };
   },
   template: `
@@ -798,19 +841,19 @@ ${generatedReport.value.healthRiskAssessment}
               <span>Head Tilt</span>
             </label>
           </div>
-          <div class="mt-4 flex items-center justify-between gap-3 p-3 bg-[var(--surface)] rounded-lg border border-[var(--border)]">
+          <label class="mt-4 flex items-center justify-between gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all"
+                 :class="soundEnabled ? 'border-[var(--accent)] bg-[rgba(200,249,106,0.1)] shadow-[0_0_0_1px_rgba(200,249,106,0.25)]' : 'border-[var(--warn)] bg-[rgba(249,115,22,0.08)]'">
             <div>
-              <div class="text-[0.9rem] font-semibold">Alert Sound</div>
+              <div class="text-[0.95rem] font-extrabold">Alert Sound</div>
               <p class="text-[0.78rem] text-[var(--muted)]">Visual overlays show automatically when enabled alert types are detected.</p>
             </div>
-            <button
-              @click="toggleSoundEnabled"
-              class="btn-calibrate mt-0 px-4 py-2"
-              :class="soundEnabled ? 'btn-emphasis btn-emphasis-accent' : 'bg-[var(--surface2)] text-[var(--text)]'"
-            >
-              {{ soundEnabled ? 'Sound ON' : 'Sound OFF' }}
-            </button>
-          </div>
+            <div class="flex items-center gap-2">
+              <span class="text-[0.78rem] font-semibold" :class="soundEnabled ? 'text-[var(--accent)]' : 'text-[var(--warn)]'">
+                {{ soundEnabled ? 'ON' : 'OFF' }}
+              </span>
+              <input type="checkbox" v-model="soundEnabled" class="w-5 h-5" style="accent-color: var(--accent);" />
+            </div>
+          </label>
         </div>
 
         <!-- Action Buttons -->
@@ -930,52 +973,68 @@ ${generatedReport.value.healthRiskAssessment}
           </div>
         </div>
 
-        <!-- Camera Feed (Critical Element) -->
-        <div class="mb-6 p-4 bg-[var(--surface2)] rounded-xl border border-[var(--border)] overflow-hidden">
-          <div class="camera-feed">
-            <video id="video" playsinline></video>
-            <canvas id="canvas"></canvas>
-            <div class="scanline"></div>
-            <div class="camera-corners">
-              <span></span><span></span><span></span><span></span>
-            </div>
-
-            <div v-if="activeScreenAlerts.length" class="absolute inset-0 z-20 bg-[rgba(239,68,68,0.18)] border border-[rgba(239,68,68,0.55)] flex items-center justify-center p-4 text-center">
-              <div class="bg-[rgba(9,9,11,0.78)] text-white px-4 py-3 rounded-lg text-[0.95rem]">
-                {{ activeScreenAlerts.join(' • ') }}
+        <!-- Camera + Side Metrics Layout -->
+        <div class="mb-6 grid grid-cols-1 xl:grid-cols-[minmax(0,1.9fr)_minmax(300px,0.95fr)] gap-6 items-start">
+          <!-- Camera Feed (Critical Element) -->
+          <div class="p-4 bg-[var(--surface2)] rounded-xl border border-[var(--border)] overflow-hidden">
+            <div class="camera-feed monitoring-camera-feed">
+              <video id="video" playsinline></video>
+              <canvas id="canvas"></canvas>
+              <div class="scanline"></div>
+              <div class="camera-corners">
+                <span></span><span></span><span></span><span></span>
               </div>
-            </div>
-            
-            <!-- Status Label -->
-            <div class="absolute bottom-4 left-4 text-white text-sm bg-black bg-opacity-50 px-2 py-1 rounded">
-              <span id="statusLabel">Initializing...</span>
-            </div>
 
-            <div id="alertOverlay" class="absolute inset-0 z-10 opacity-0 pointer-events-none bg-[rgba(239,68,68,0.12)] flex items-center justify-center text-white text-sm font-semibold transition-opacity duration-200">
-              Too close to the screen
-            </div>
-            
-            <!-- Hidden elements needed by mediapipe.js but not displayed -->
-            <div style="display: none;">
-              <span id="baselineLabel"></span>
-              <span id="tolLabel"></span>
-              <span id="sizeStat"></span>
-              <span id="baseStat"></span>
-              <span id="stateStat"></span>
-              <span id="soundLabel"></span>
+              <div v-if="activeScreenAlerts.length" class="absolute inset-0 z-20 bg-[rgba(239,68,68,0.18)] border border-[rgba(239,68,68,0.55)] flex items-center justify-center p-4 text-center">
+                <div class="bg-[rgba(9,9,11,0.78)] text-white px-4 py-3 rounded-lg text-[0.95rem]">
+                  {{ activeScreenAlerts.join(' • ') }}
+                </div>
+              </div>
+
+              <!-- Status Label -->
+              <div class="absolute bottom-4 left-4 text-white text-sm bg-black bg-opacity-50 px-2 py-1 rounded">
+                <span id="statusLabel">Initializing...</span>
+              </div>
+
+              <div id="alertOverlay" class="absolute inset-0 z-10 opacity-0 pointer-events-none bg-[rgba(239,68,68,0.12)] flex items-center justify-center text-white text-sm font-semibold transition-opacity duration-200">
+                Too close to the screen
+              </div>
+
+              <!-- Hidden elements needed by mediapipe.js but not displayed -->
+              <div style="display: none;">
+                <span id="baselineLabel"></span>
+                <span id="tolLabel"></span>
+                <span id="sizeStat"></span>
+                <span id="baseStat"></span>
+                <span id="stateStat"></span>
+                <span id="soundLabel"></span>
+              </div>
             </div>
           </div>
-        </div>
-        <div class="mb-6 p-5 bg-[var(--surface)] rounded-xl border border-[var(--border)]">
-          <h3 class="font-[Syne] text-[1.3rem] font-bold mb-4">Real-time Metrics</h3>
-          <div class="flex flex-col gap-4">
-            <div v-for="row in realtimeMetricRows" :key="row.key" class="flex flex-col gap-1.5">
-              <div class="flex items-center justify-between text-[0.95rem]">
-                <span class="text-[var(--text)]">{{ row.label }}</span>
-                <span class="font-semibold" :style="{ color: row.color }">{{ row.valueText }}</span>
-              </div>
-              <div class="h-[0.38rem] bg-[var(--surface2)] rounded-full overflow-hidden">
-                <div class="h-full rounded-full transition-all duration-300" :style="{ width: row.width + '%', background: row.gradient }"></div>
+
+          <!-- Side Card: Instructions + Real-time Metrics -->
+          <div class="p-5 bg-[var(--surface)] rounded-xl border border-[var(--border)] xl:sticky xl:top-24">
+            <h3 class="font-[Syne] text-[1.3rem] font-bold mb-3">Real-time Metrics</h3>
+
+            <div class="mb-4 p-3 bg-[var(--surface2)] rounded-lg border border-[var(--border)]">
+              <p class="text-[0.85rem] font-semibold mb-2">Quick setup guidance</p>
+              <ul class="text-[0.8rem] text-[var(--muted)] space-y-1.5">
+                <li>• Wait for face distance to finish calibrating before interpreting alerts.</li>
+                <li>• Keep your head and both shoulders visible inside the camera frame.</li>
+                <li>• Sit upright and centered so tracking stays stable.</li>
+                <li>• Use steady lighting and avoid strong backlight behind you.</li>
+              </ul>
+            </div>
+
+            <div class="flex flex-col gap-4">
+              <div v-for="row in realtimeMetricRows" :key="row.key" class="flex flex-col gap-1.5">
+                <div class="flex items-center justify-between text-[0.95rem]">
+                  <span class="text-[var(--text)]">{{ row.label }}</span>
+                  <span class="font-semibold" :style="{ color: row.color }">{{ row.valueText }}</span>
+                </div>
+                <div class="h-[0.38rem] bg-[var(--surface2)] rounded-full overflow-hidden">
+                  <div class="h-full rounded-full transition-all duration-300" :style="{ width: row.width + '%', background: row.gradient }"></div>
+                </div>
               </div>
             </div>
           </div>

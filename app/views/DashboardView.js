@@ -365,6 +365,7 @@ export const DashboardView = {
       if (!canvas || !window.Chart) return;
 
       const ctx = canvas.getContext('2d');
+      if (!ctx) return;
       const gradient = ctx.createLinearGradient(0, 0, 0, 180);
       gradient.addColorStop(0, 'rgba(200, 249, 106, 0.25)');
       gradient.addColorStop(1, 'rgba(200, 249, 106, 0.01)');
@@ -375,7 +376,13 @@ export const DashboardView = {
         chartInstance.destroy();
       }
 
-      chartInstance = new Chart(canvas, {
+      const tickStep = selectedTrendPeriod.value === '90D'
+        ? 10
+        : selectedTrendPeriod.value === '30D'
+          ? 5
+          : 1;
+
+      chartInstance = new Chart(ctx, {
         type: 'line',
         data: {
           labels: trendData.labels,
@@ -416,7 +423,18 @@ export const DashboardView = {
           scales: {
             x: {
               grid: { color: 'rgba(255,255,255,0.04)' },
-              ticks: { color: '#6b7280', font: { family: 'DM Sans', size: 11 } }
+              ticks: {
+                color: '#6b7280',
+                font: { family: 'DM Sans', size: 11 },
+                autoSkip: true,
+                maxTicksLimit: selectedTrendPeriod.value === '90D' ? 10 : selectedTrendPeriod.value === '30D' ? 8 : 7,
+                callback: (value, index) => {
+                  if (index % tickStep !== 0 && index !== trendData.labels.length - 1) {
+                    return '';
+                  }
+                  return trendData.labels[index] || '';
+                }
+              }
             },
             y: {
               min: 0,
@@ -442,7 +460,6 @@ export const DashboardView = {
       });
       await loadLatestAssessment();
       await loadChatHistory();
-      showStatusToast('Slouch Detected', 'You have been leaning forward for 15 minutes. Straighten up and take a short break.', 'var(--warn)');
       nextTick(() => initChart());
     });
 

@@ -225,6 +225,7 @@ export const ProgressHubView = {
       if (!canvas || !window.Chart) return;
 
       const ctx = canvas.getContext('2d');
+      if (!ctx) return;
       const gradient = ctx.createLinearGradient(0, 0, 0, 180);
       gradient.addColorStop(0, 'rgba(200, 249, 106, 0.25)');
       gradient.addColorStop(1, 'rgba(200, 249, 106, 0.01)');
