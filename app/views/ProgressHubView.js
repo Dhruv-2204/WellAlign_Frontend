@@ -1,6 +1,7 @@
 // Progress Hub: combined view showing today's plan and progress tracking in one unified dashboard.
 import { checkBackendHealth } from '../services/backendHealth.js';
 import { useStatusToast } from '../utils/useStatusToast.js';
+import { api } from '../services/api.js';
 
 export const ProgressHubView = {
   setup() {
@@ -9,6 +10,7 @@ export const ProgressHubView = {
     const selectedPeriod = ref('7D');
     const chart = ref(null);
     const backendSyncStatus = ref('Syncing data...');
+    const assessments = ref([]);
 
     const {
       showToast,
@@ -45,35 +47,183 @@ export const ProgressHubView = {
 
 
 
-    // ===== PROGRESS DATA =====
-    const weeklyData = ref([
-      { id: 1, name: 'Mon', score: 78, hours: '3.2', color: 'var(--warn)', planDone: false },
-      { id: 2, name: 'Tue', score: 82, hours: '4.1', color: 'var(--accent)', planDone: true },
-      { id: 3, name: 'Wed', score: 80, hours: '3.8', color: 'var(--accent)', planDone: true },
-      { id: 4, name: 'Thu', score: 85, hours: '4.5', color: 'var(--accent)', planDone: true },
-      { id: 5, name: 'Fri', score: 81, hours: '3.9', color: 'var(--accent)', planDone: false },
-      { id: 6, name: 'Sat', score: 79, hours: '2.1', color: 'var(--warn)', planDone: true },
-      { id: 7, name: 'Sun', score: 84, hours: '4.3', color: 'var(--accent)', planDone: true }
-    ]);
-
-    const sessionHistory = ref([
-      { id: 1, date: 'Today', time: '2:45 PM', score: 84, duration: '2h 45m', quality: 'Excellent', color: 'var(--accent)' },
-      { id: 2, date: 'Yesterday', time: '3:30 PM', score: 81, duration: '1h 30m', quality: 'Good', color: 'var(--accent)' },
-      { id: 3, date: 'Monday', time: '12:00 PM', score: 78, duration: '3h 15m', quality: 'Good', color: 'var(--accent)' }
-    ]);
+    // ===== PROGRESS DATA (Assessment page source, not live monitoring) =====
+    const weeklyData = ref([]);
+    const sessionHistory = ref([]);
 
     // ===== COMPUTED PROPERTIES =====
     const completedCount = computed(() => todaysPlan.value.filter((item) => item.completed).length);
 
     const planAdherenceRate = computed(() => {
-      const completed = weeklyData.value.filter(day => day.planDone).length;
-      return Math.round((completed / weeklyData.value.length) * 100);
+      if (!weeklyData.value.length) return 0;
+      const taken = weeklyData.value.filter((day) => !day.isAbsent).length;
+      return Math.round((taken / weeklyData.value.length) * 100);
     });
 
     const averageScore = computed(() => {
+      if (!weeklyData.value.length) return 0;
       const sum = weeklyData.value.reduce((acc, day) => acc + day.score, 0);
       return Math.round(sum / weeklyData.value.length);
     });
+
+    const takenDaysCount = computed(() => weeklyData.value.filter((day) => !day.isAbsent).length);
+
+    function unwrapData(payload) {
+      if (!payload || typeof payload !== 'object') return payload;
+      if (payload.success && payload.data !== undefined) return payload.data;
+      return payload.data !== undefined ? payload.data : payload;
+    }
+
+    function toDayKey(dateValue) {
+      const d = new Date(dateValue);
+      if (Number.isNaN(d.getTime())) return null;
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    }
+
+    function parseScore(assessment) {
+      const raw = assessment?.overall_score ?? assessment?.score;
+      const numeric = Number(raw);
+      return Number.isFinite(numeric) ? Math.max(0, Math.min(100, Math.round(numeric))) : null;
+    }
+
+    function makeLatestAssessmentMap(assessmentRows) {
+      const sorted = [...assessmentRows].sort((a, b) => {
+        const aTime = new Date(a.createdAt || a.timestamp || 0).getTime();
+        const bTime = new Date(b.createdAt || b.timestamp || 0).getTime();
+        return bTime - aTime;
+      });
+
+      const latestByDay = new Map();
+      sorted.forEach((item) => {
+        const key = toDayKey(item.createdAt || item.timestamp);
+        if (!key || latestByDay.has(key)) return;
+        const score = parseScore(item);
+        if (score === null) return;
+        latestByDay.set(key, {
+          score,
+          createdAt: item.createdAt || item.timestamp
+        });
+      });
+
+      return latestByDay;
+    }
+
+    function getSevenDayWindowEndingTomorrow() {
+      const tomorrow = new Date();
+      tomorrow.setHours(0, 0, 0, 0);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      const start = new Date(tomorrow);
+      start.setDate(tomorrow.getDate() - 6);
+
+      const days = [];
+      for (let i = 0; i < 7; i += 1) {
+        const d = new Date(start);
+        d.setDate(start.getDate() + i);
+        days.push(d);
+      }
+      return days;
+    }
+
+    function getRollingDays(count) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const days = [];
+      for (let i = count - 1; i >= 0; i -= 1) {
+        const d = new Date(today);
+        d.setDate(today.getDate() - i);
+        days.push(d);
+      }
+      return days;
+    }
+
+    function buildDayScoreRows(days, latestByDay) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(today.getDate() + 1);
+
+      return days.map((dateValue, index) => {
+        const key = toDayKey(dateValue);
+        const latest = latestByDay.get(key);
+        const isTomorrow = dateValue.getTime() === tomorrow.getTime();
+        const isToday = dateValue.getTime() === today.getTime();
+        const isAbsent = !latest;
+        const score = latest ? latest.score : 0;
+
+        let statusText = 'Latest score from Assess';
+        if (isTomorrow) {
+          statusText = 'Upcoming day - posture score not taken yet';
+        } else if (isToday && isAbsent) {
+          statusText = 'Today - posture score not taken';
+        } else if (isAbsent) {
+          statusText = 'Absent - posture score not taken';
+        }
+
+        return {
+          id: index + 1,
+          key,
+          name: dateValue.toLocaleDateString('en-GB', { weekday: 'short' }),
+          shortDate: dateValue.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+          score,
+          isAbsent,
+          isTomorrow,
+          isToday,
+          statusText,
+          timeText: latest
+            ? new Date(latest.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : '--:--',
+          color: isAbsent ? 'var(--muted)' : (score >= 75 ? 'var(--accent)' : 'var(--warn)')
+        };
+      });
+    }
+
+    function buildRecentAssessEntries(assessmentRows) {
+      const sorted = [...assessmentRows].sort((a, b) => {
+        const aTime = new Date(a.createdAt || a.timestamp || 0).getTime();
+        const bTime = new Date(b.createdAt || b.timestamp || 0).getTime();
+        return bTime - aTime;
+      });
+
+      return sorted
+        .map((item) => {
+          const score = parseScore(item);
+          if (score === null) return null;
+
+          const createdAt = new Date(item.createdAt || item.timestamp || Date.now());
+          return {
+            id: item._id || item.id || createdAt.getTime(),
+            date: createdAt.toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short' }),
+            time: createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            score,
+            duration: 'Captured from Assess page',
+            quality: 'Recorded',
+            color: score >= 75 ? 'var(--accent)' : 'var(--warn)'
+          };
+        })
+        .filter(Boolean)
+        .slice(0, 3);
+    }
+
+    async function loadAssessmentProgress() {
+      try {
+        const payload = await api.assessments.list();
+        const rows = unwrapData(payload);
+        assessments.value = Array.isArray(rows) ? rows : [];
+      } catch (err) {
+        assessments.value = [];
+        showStatusToast('Sync Warning', 'Assessment history unavailable. Marking missing days as absent.', 'var(--warn)');
+      }
+
+      const latestByDay = makeLatestAssessmentMap(assessments.value);
+      // Weekly progress is intentionally sourced from Assess page submissions, not live monitoring sessions.
+      weeklyData.value = buildDayScoreRows(getSevenDayWindowEndingTomorrow(), latestByDay);
+      sessionHistory.value = buildRecentAssessEntries(assessments.value);
+    }
 
     // ===== METHODS =====
     function toggleTask(task) {
@@ -84,23 +234,25 @@ export const ProgressHubView = {
 
     function getChartData() {
       if (selectedPeriod.value === '7D') {
+        const days = weeklyData.value.length ? weeklyData.value : buildDayScoreRows(getSevenDayWindowEndingTomorrow(), new Map());
         return {
-          labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-          data: [78, 82, 80, 85, 81, 79, 84]
+          labels: days.map((day) => day.shortDate),
+          data: days.map((day) => day.score),
+          absent: days.map((day) => day.isAbsent)
         };
       }
 
       if (selectedPeriod.value === '30D') {
+        const latestByDay = makeLatestAssessmentMap(assessments.value);
+        const rows30 = buildDayScoreRows(getRollingDays(30), latestByDay);
         return {
-          labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4'],
-          data: [75, 78, 82, 81]
+          labels: rows30.map((row) => row.shortDate),
+          data: rows30.map((row) => row.score),
+          absent: rows30.map((row) => row.isAbsent)
         };
-      }
-
-      return {
-        labels: ['Jan', 'Feb', 'Mar'],
-        data: [68, 75, 81]
       };
+
+      return { labels: [], data: [], absent: [] };
     }
 
     function initChart() {
@@ -131,7 +283,7 @@ export const ProgressHubView = {
             fill: true,
             tension: 0.45,
             pointRadius: 4,
-            pointBackgroundColor: '#c8f96a',
+            pointBackgroundColor: (ctx) => chartData.absent[ctx.dataIndex] ? '#6b7280' : '#c8f96a',
             pointBorderColor: '#0d0f14',
             pointBorderWidth: 2
           }]
@@ -149,7 +301,10 @@ export const ProgressHubView = {
               bodyColor: '#e8eaf0',
               padding: 10,
               callbacks: {
-                label: (point) => `Score: ${point.parsed.y}%`
+                label: (point) => {
+                  const isAbsent = chartData.absent[point.dataIndex];
+                  return isAbsent ? 'Absent - posture score not taken' : `Score: ${point.parsed.y}%`;
+                }
               }
             }
           },
@@ -159,7 +314,7 @@ export const ProgressHubView = {
               ticks: { color: '#6b7280', font: { family: 'DM Sans', size: 11 } }
             },
             y: {
-              min: 60,
+              min: 0,
               max: 100,
               grid: { color: 'rgba(255,255,255,0.04)' },
               ticks: {
@@ -184,6 +339,8 @@ export const ProgressHubView = {
         successMessage: 'Data synced',
         unavailableMessage: 'Using local data (backend unavailable)'
       });
+
+      await loadAssessmentProgress();
 
       nextTick(() => {
         initChart();
@@ -211,6 +368,7 @@ export const ProgressHubView = {
       backendSyncStatus,
       averageScore,
       planAdherenceRate,
+      takenDaysCount,
       hideStatusToast
     };
   },
@@ -221,6 +379,7 @@ export const ProgressHubView = {
           <div>
             <h1 class="font-[Syne] text-[2.2rem] font-extrabold mb-2">Progress Hub</h1>
             <p class="text-[var(--muted)] text-[0.95rem]">Your daily plan & posture progress in one view</p>
+            <p class="text-[0.75rem] text-[var(--muted)] mt-1">Weekly progress is sourced from Assess page submissions, not live monitoring.</p>
             <p class="text-[0.75rem] text-[var(--muted)] mt-2">{{ backendSyncStatus }}</p>
           </div>
 
@@ -277,15 +436,15 @@ export const ProgressHubView = {
         <div class="card delay-[200ms]">
           <div class="section-header">
             <div class="section-title">Weekly Breakdown</div>
-            <span class="badge badge-green">{{ planAdherenceRate }}% Plan Done</span>
+            <span class="badge badge-green">{{ planAdherenceRate }}% Days Recorded</span>
           </div>
 
           <div class="grid grid-cols-7 gap-2">
-            <div v-for="day in weeklyData" :key="day.id" class="text-center p-3 bg-[var(--surface2)] rounded-lg border" :class="{ 'border-[var(--accent)] border-2': day.planDone }" :style="{ borderTopColor: day.color, borderTopWidth: day.planDone ? '0.1875rem' : '0.1875rem' }">
+            <div v-for="day in weeklyData" :key="day.id" class="text-center p-3 bg-[var(--surface2)] rounded-lg border" :class="{ 'border-[var(--accent)] border-2': !day.isAbsent }" :style="{ borderTopColor: day.color, borderTopWidth: '0.1875rem' }">
               <div class="text-[0.7rem] text-[var(--muted)] mb-1">{{ day.name }}</div>
               <div class="text-[1rem] font-extrabold" :style="{ color: day.color }">{{ day.score }}%</div>
-              <div class="text-[0.65rem] text-[var(--muted)] mt-1">{{ day.hours }}h</div>
-              <div class="text-[1.2rem] mt-1" :class="day.planDone ? 'text-[var(--accent)]' : 'text-[var(--muted)]'">{{ day.planDone ? '✓' : '—' }}</div>
+              <div class="text-[0.65rem] text-[var(--muted)] mt-1">{{ day.statusText }}</div>
+              <div class="text-[1.2rem] mt-1" :class="!day.isAbsent ? 'text-[var(--accent)]' : 'text-[var(--muted)]'">{{ !day.isAbsent ? '✓' : 'Absent' }}</div>
             </div>
           </div>
         </div>
@@ -294,10 +453,10 @@ export const ProgressHubView = {
         <div class="card delay-[250ms]">
           <div class="section-header">
             <div class="section-title">Recent Sessions</div>
-            <span class="badge badge-muted">Last 3</span>
+            <span class="badge badge-muted">Latest existing assessments</span>
           </div>
 
-          <div class="flex flex-col gap-3">
+          <div v-if="sessionHistory.length" class="flex flex-col gap-3">
             <div v-for="session in sessionHistory" :key="session.id" class="p-4 bg-[var(--surface2)] rounded-lg border border-[var(--border)]" :style="{ borderTopColor: session.color, borderTopWidth: '0.1875rem' }">
               <div class="flex justify-between items-start">
                 <div>
@@ -310,6 +469,9 @@ export const ProgressHubView = {
                 </div>
               </div>
             </div>
+          </div>
+          <div v-else class="text-[0.85rem] text-[var(--muted)] p-4 bg-[var(--surface2)] rounded-lg border border-[var(--border)]">
+            No assessment sessions recorded yet.
           </div>
         </div>
       </div>
@@ -328,12 +490,12 @@ export const ProgressHubView = {
               <div class="card-value text-2xl text-[var(--accent)]">{{ averageScore }}%</div>
             </div>
             <div class="p-3 bg-[var(--surface2)] rounded-lg border-l-[0.1875rem] border-[var(--warn)]">
-              <div class="card-label">Plan Adherence</div>
-              <div class="card-value text-2xl text-[var(--warn)]">{{ planAdherenceRate }}%</div>
+              <div class="card-label">Days Recorded</div>
+              <div class="card-value text-2xl text-[var(--warn)]">{{ takenDaysCount }}/7</div>
             </div>
             <div class="p-3 bg-[var(--surface2)] rounded-lg border-l-[0.1875rem] border-[var(--success)]">
-              <div class="card-label">Total Hours</div>
-              <div class="card-value text-2xl">25.8h</div>
+              <div class="card-label">Source</div>
+              <div class="card-value text-[1.1rem]">Assess Page Data</div>
             </div>
           </div>
         </div>
