@@ -88,44 +88,50 @@ async function extractPoseLandmarks(image) {
 }
 
 function mapSnapshotToPostureClass(snapshot) {
-  if (!snapshot || snapshot.classification === 'GOOD') {
+  if (!snapshot) {
     return 'goodposture';
   }
 
-  const issues = snapshot.issues || [];
-  const hasSlouching = issues.some((issue) => issue.type === 'SLOUCHING');
-  if (hasSlouching) {
-    return 'Slumpsitting';
+  const metrics = snapshot.detailedMetrics || {};
+  const headTiltDetected = Boolean(metrics.headTilt?.detected);
+  const shoulderDetected = Boolean(metrics.shoulderAsymmetry?.detected);
+
+  if (!headTiltDetected && !shoulderDetected) {
+    return 'goodposture';
   }
 
   return 'Forwardposture';
 }
 
-function buildFrontFindings(snapshot) {
-  const findings = [];
-  const issues = snapshot?.issues || [];
+function getSeverityLabel(percent) {
+  if (percent >= 70) return 'severe';
+  if (percent >= 40) return 'moderate';
+  if (percent > 0) return 'mild';
+  return 'none';
+}
 
-  if (issues.length === 0) {
-    findings.push('Front view appears well-aligned');
-    findings.push('Shoulder and head symmetry look stable');
+function buildFrontFindings(snapshot, headTiltPercent, shoulderPercent) {
+  const findings = [];
+  const metrics = snapshot?.detailedMetrics || {};
+  const headTiltAngle = Number(metrics.headTilt?.value || 0);
+  const shoulderRaw = Number(metrics.shoulderAsymmetry?.value || 0);
+
+  findings.push(`Head tilt percentage: ${headTiltPercent}% (${getSeverityLabel(headTiltPercent)})`);
+  findings.push(`Uneven shoulder percentage: ${shoulderPercent}% (${getSeverityLabel(shoulderPercent)})`);
+
+  if (headTiltPercent === 0 && shoulderPercent === 0) {
+    findings.push('Front posture is good. No significant head tilt or shoulder asymmetry detected.');
   } else {
-    issues.forEach((issue) => {
-      if (issue.type === 'FORWARD_HEAD') {
-        findings.push('Forward head tendency detected from front view');
-      }
-      if (issue.type === 'HEAD_TILT' || issue.type === 'VERTICAL_TILT') {
-        findings.push('Head tilt or neck alignment issue detected');
-      }
-      if (issue.type === 'SHOULDER_ASYMMETRY') {
-        findings.push('Shoulder asymmetry detected');
-      }
-      if (issue.type === 'SLOUCHING') {
-        findings.push('Upper trunk slouching tendency detected');
-      }
-    });
+    if (headTiltPercent > 0) {
+      findings.push(`Head tilt detected at about ${Math.round(headTiltAngle)} degrees.`);
+    }
+    if (shoulderPercent > 0) {
+      findings.push(`Shoulder asymmetry detected at about ${Math.round(shoulderRaw)}% height difference.`);
+    }
   }
 
-  findings.push(`Front-view severity score: ${Math.round(snapshot?.overallSeverity || 0)}%`);
+  const frontSeverity = Math.round((headTiltPercent + shoulderPercent) / 2);
+  findings.push(`Front severity score: ${frontSeverity}%`);
   return Array.from(new Set(findings));
 }
 
@@ -154,15 +160,23 @@ export async function analyzeFrontImageLocally(file) {
     }
 
     const snapshot = analyzePostureSnapshot(landmarks);
-    const score = Math.max(0, Math.min(100, Math.round(100 - (snapshot.overallSeverity || 0))));
-    const confidence = Math.max(50, Math.min(99, Math.round(100 - (snapshot.overallSeverity || 0))));
+    const metrics = snapshot?.detailedMetrics || {};
+    const headTiltPercent = Math.max(0, Math.min(100, Math.round(Number(metrics.headTilt?.severity || 0))));
+    const shoulderPercent = Math.max(0, Math.min(100, Math.round(Number(metrics.shoulderAsymmetry?.severity || 0))));
+
+    // Front score is derived from the two front-view issues requested by product logic.
+    const weightedSeverity = Math.round((headTiltPercent * 0.55) + (shoulderPercent * 0.45));
+    const score = Math.max(0, Math.min(100, 100 - weightedSeverity));
+    const confidence = Math.max(50, Math.min(99, score));
 
     return {
       success: true,
       score,
       class: mapSnapshotToPostureClass(snapshot),
       confidence,
-      findings: buildFrontFindings(snapshot),
+      head_tilt_percentage: headTiltPercent,
+      shoulder_asymmetry_percentage: shoulderPercent,
+      findings: buildFrontFindings(snapshot, headTiltPercent, shoulderPercent),
       landmarks
     };
   } catch (error) {

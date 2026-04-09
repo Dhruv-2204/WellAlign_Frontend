@@ -91,13 +91,17 @@ export async function saveAssessment(assessmentResult) {
         success: assessmentResult.frontResult.success,
         score: assessmentResult.frontResult.score,
         findings: assessmentResult.frontResult.findings || [],
-        class: assessmentResult.frontResult.class
+        class: assessmentResult.frontResult.class,
+        landmarks: assessmentResult.frontResult.landmarks || null,
+        head_tilt_percentage: assessmentResult.frontResult.head_tilt_percentage ?? null,
+        shoulder_asymmetry_percentage: assessmentResult.frontResult.shoulder_asymmetry_percentage ?? null
       } : null,
       sideResult: assessmentResult.sideResult ? {
         success: assessmentResult.sideResult.success,
         score: assessmentResult.sideResult.score,
         findings: assessmentResult.sideResult.findings || [],
-        class: assessmentResult.sideResult.class
+        class: assessmentResult.sideResult.class,
+        landmarks: assessmentResult.sideResult.landmarks || null
       } : null,
       report: assessmentResult.report ? {
         overall_score: assessmentResult.report.overall_score,

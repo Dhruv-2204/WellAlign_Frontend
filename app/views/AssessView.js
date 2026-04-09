@@ -60,6 +60,262 @@ export const AssessView = {
       return reportHistory.value.length ? reportHistory.value[0] : null;
     });
 
+    const assessmentExerciseList = computed(() => {
+      const ai = Array.isArray(geminiAssessment.value?.recommendedExercises)
+        ? geminiAssessment.value.recommendedExercises
+        : [];
+      if (ai.length > 0) return ai;
+      return Array.isArray(report.value?.report?.exercises) ? report.value.report.exercises : [];
+    });
+
+    const topGeminiVideos = computed(() => {
+      const seen = new Set();
+      const rows = [];
+
+      (Array.isArray(geminiAssessment.value?.youtubeGroups) ? geminiAssessment.value.youtubeGroups : []).forEach((group) => {
+        (Array.isArray(group?.videos) ? group.videos : []).forEach((video) => {
+          const url = String(video?.url || '').trim();
+          const title = String(video?.title || '').trim();
+          if (!url || !title || seen.has(url)) return;
+          seen.add(url);
+          rows.push({
+            url,
+            title,
+            videoId: video?.videoId || url,
+          });
+        });
+      });
+
+      return rows.slice(0, 3);
+    });
+
+    const targetedExerciseSearches = computed(() => {
+      const fromGemini = Array.isArray(geminiAssessment.value?.youtubeSearches)
+        ? geminiAssessment.value.youtubeSearches
+        : [];
+      const fromGroups = (Array.isArray(geminiAssessment.value?.youtubeGroups) ? geminiAssessment.value.youtubeGroups : [])
+        .map((group) => ({
+          query: String(group?.query || '').trim(),
+          reason: String(group?.reason || '').trim(),
+        }))
+        .filter((item) => item.query.length > 0);
+
+      const merged = [...fromGemini, ...fromGroups]
+        .filter((item) => item && typeof item === 'object')
+        .map((item) => ({
+          query: String(item.query || '').trim(),
+          reason: String(item.reason || '').trim(),
+        }))
+        .filter((item) => item.query.length > 0);
+
+      const seen = new Set();
+      const unique = [];
+      merged.forEach((item) => {
+        const key = item.query.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        unique.push(item);
+      });
+
+      return unique.slice(0, 6);
+    });
+
+    const issueCausesAndEffects = computed(() => {
+      const guidance = Array.isArray(geminiAssessment.value?.issueGuidance)
+        ? geminiAssessment.value.issueGuidance
+        : [];
+
+      return guidance.map((issue) => ({
+        area: issue.body_area || issue.issue_title || 'Posture Issue',
+        cause: issue.likely_cause || '',
+        effects: Array.isArray(issue.symptoms) ? issue.symptoms : []
+      }));
+    });
+
+    function normalizeWords(text) {
+      return String(text || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length >= 3);
+    }
+
+    function scoreTokenOverlap(tokens, text) {
+      if (!tokens.length || !text) return 0;
+      return tokens.reduce((score, token) => (text.includes(token) ? score + 1 : score), 0);
+    }
+
+    function findExerciseVideos(exerciseName, issue, groups) {
+      const exerciseTokens = normalizeWords(exerciseName);
+      const issueTokens = normalizeWords(`${issue?.body_area || ''} ${issue?.issue_title || ''} ${issue?.likely_cause || ''}`)
+        .slice(0, 6);
+      if (exerciseTokens.length === 0 && issueTokens.length === 0) {
+        return [];
+      }
+
+      const matched = [];
+      groups.forEach((group) => {
+        const groupVideos = Array.isArray(group?.videos) ? group.videos : [];
+        if (!groupVideos.length) return;
+
+        const queryText = `${group?.query || ''} ${group?.reason || ''}`.toLowerCase();
+        const queryExerciseScore = scoreTokenOverlap(exerciseTokens, queryText);
+        const queryIssueScore = scoreTokenOverlap(issueTokens, queryText);
+
+        (Array.isArray(group?.videos) ? group.videos : []).forEach((video) => {
+          if (!video?.url || !video?.title) return;
+
+          const titleText = String(video.title || '').toLowerCase();
+          const titleExerciseScore = scoreTokenOverlap(exerciseTokens, titleText);
+          const titleIssueScore = scoreTokenOverlap(issueTokens, titleText);
+          const totalScore = (queryExerciseScore * 2) + queryIssueScore + (titleExerciseScore * 3) + titleIssueScore;
+
+          if (totalScore <= 0) return;
+
+          matched.push({
+            title: video.title,
+            url: video.url,
+            key: video.videoId || video.url,
+            score: totalScore
+          });
+        });
+      });
+
+      const seen = new Set();
+      return matched.filter((item) => {
+        if (seen.has(item.url)) return false;
+        seen.add(item.url);
+        return true;
+      }).sort((a, b) => b.score - a.score)
+        .slice(0, 2)
+        .map(({ score, ...video }) => video);
+    }
+
+    function getIssueFallbackVideos(issue, groups) {
+      const issueQueries = Array.isArray(issue?.youtube_searches)
+        ? issue.youtube_searches.map((row) => String(row?.query || '').trim().toLowerCase()).filter(Boolean)
+        : [];
+      const issueTokens = normalizeWords(`${issue?.body_area || ''} ${issue?.issue_title || ''} ${issue?.likely_cause || ''}`)
+        .slice(0, 8);
+
+      const collected = [];
+      groups.forEach((group) => {
+        const q = String(group?.query || '').trim().toLowerCase();
+        if (!q || !issueQueries.includes(q)) return;
+        (Array.isArray(group?.videos) ? group.videos : []).forEach((video) => {
+          if (video?.url && video?.title) {
+            collected.push({ title: video.title, url: video.url, key: video.videoId || video.url, score: 999 });
+          }
+        });
+      });
+
+      // If exact query alignment is sparse, recover issue-specific videos via soft token matching.
+      if (collected.length < 2 && issueTokens.length > 0) {
+        groups.forEach((group) => {
+          const groupVideos = Array.isArray(group?.videos) ? group.videos : [];
+          if (!groupVideos.length) return;
+
+          const groupText = `${group?.query || ''} ${group?.reason || ''}`.toLowerCase();
+          const groupScore = scoreTokenOverlap(issueTokens, groupText);
+          if (groupScore <= 0) return;
+
+          groupVideos.forEach((video) => {
+            if (!video?.url || !video?.title) return;
+            const titleText = String(video.title || '').toLowerCase();
+            const titleScore = scoreTokenOverlap(issueTokens, titleText);
+            const totalScore = (groupScore * 2) + (titleScore * 3);
+            if (totalScore <= 0) return;
+
+            collected.push({
+              title: video.title,
+              url: video.url,
+              key: video.videoId || video.url,
+              score: totalScore
+            });
+          });
+        });
+      }
+
+      const seen = new Set();
+      return collected.filter((item) => {
+        if (seen.has(item.url)) return false;
+        seen.add(item.url);
+        return true;
+      }).sort((a, b) => (b.score || 0) - (a.score || 0))
+        .slice(0, 2)
+        .map(({ score, ...video }) => video);
+    }
+
+    const issueGuidanceCards = computed(() => {
+      const guidance = Array.isArray(geminiAssessment.value?.issueGuidance)
+        ? geminiAssessment.value.issueGuidance
+        : [];
+      const groups = Array.isArray(geminiAssessment.value?.youtubeGroups)
+        ? geminiAssessment.value.youtubeGroups
+        : [];
+
+      return guidance.map((issue) => ({
+        ...issue,
+        videos: getIssueFallbackVideos(issue, groups),
+        fallbackSearches: Array.isArray(issue?.youtube_searches) ? issue.youtube_searches : []
+      }));
+    });
+
+    const correctiveExerciseCards = computed(() => {
+      const guidance = Array.isArray(geminiAssessment.value?.issueGuidance)
+        ? geminiAssessment.value.issueGuidance
+        : [];
+      const groups = Array.isArray(geminiAssessment.value?.youtubeGroups)
+        ? geminiAssessment.value.youtubeGroups
+        : [];
+
+      const cards = [];
+
+      if (guidance.length > 0) {
+        guidance.forEach((issue) => {
+          const area = issue.body_area || issue.issue_title || 'Posture Issue';
+          const exercises = Array.isArray(issue.corrective_exercises) ? issue.corrective_exercises : [];
+          const issueVideos = getIssueFallbackVideos(issue, groups);
+          const fallbackQueries = Array.isArray(issue.youtube_searches) ? issue.youtube_searches : [];
+          exercises.forEach((exercise, exerciseIdx) => {
+            const matchedVideos = findExerciseVideos(exercise, issue, groups);
+            const videos = matchedVideos.length > 0 ? matchedVideos : issueVideos;
+            cards.push({
+              name: exercise,
+              whatItDoes: `Helps reduce ${area.toLowerCase()} strain and corrects the identified posture cause.`,
+              videos,
+              fallbackQueries: fallbackQueries.length > 0
+                ? [fallbackQueries[exerciseIdx % fallbackQueries.length]]
+                : []
+            });
+          });
+        });
+      }
+
+      if (cards.length === 0) {
+        assessmentExerciseList.value.forEach((exercise) => {
+          const videos = findExerciseVideos(exercise, null, groups);
+          cards.push({
+            name: exercise,
+            whatItDoes: 'Supports posture correction and reduces recurrent muscular strain when done consistently.',
+            videos,
+            fallbackQueries: targetedExerciseSearches.value.slice(0, 1)
+          });
+        });
+      }
+
+      const deduped = [];
+      const seenNames = new Set();
+      cards.forEach((card) => {
+        const key = String(card.name || '').toLowerCase();
+        if (!key || seenNames.has(key)) return;
+        seenNames.add(key);
+        deduped.push(card);
+      });
+
+      return deduped.slice(0, 8);
+    });
+
     const {
       showToast,
       toastTitle,
@@ -432,16 +688,43 @@ export const AssessView = {
       return 'Error';
     }
 
+    function buildYoutubeSearchUrl(query) {
+      const q = String(query || '').trim();
+      if (!q) return 'https://www.youtube.com/results?search_query=posture+correction+exercise';
+      return `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
+    }
+
     async function runGeminiAssessmentAnalysis(assessmentId) {
       if (!assessmentId) return;
 
       try {
         const geminiResult = await analyzeAssessmentWithGemini(assessmentId);
-        const youtubeGroups = await enrichSearchesWithVideos(geminiResult.youtubeSearches || [], 3);
+        const backendVideoGroups = Array.isArray(geminiResult.youtubeVideoGroups)
+          ? geminiResult.youtubeVideoGroups
+          : [];
+        const backendHasPlayableVideos = backendVideoGroups.some(
+          (group) => Array.isArray(group?.videos) && group.videos.length > 0
+        );
+
+        let youtubeGroups = backendVideoGroups;
+        if (!backendHasPlayableVideos) {
+          const searchSeed = Array.isArray(geminiResult.youtubeSearches) ? [...geminiResult.youtubeSearches] : [];
+          const exerciseQueries = Array.isArray(geminiResult.recommendedExercises)
+            ? geminiResult.recommendedExercises.slice(0, 4).map((exercise) => ({
+                query: `${exercise} posture exercise tutorial`,
+                reason: `How to perform ${exercise}`
+              }))
+            : [];
+
+          youtubeGroups = await enrichSearchesWithVideos([...searchSeed, ...exerciseQueries], 3);
+        }
 
         geminiAssessment.value = {
           analysis: geminiResult.analysis,
           confirmedScore: geminiResult.confirmedScore,
+          issueGuidance: geminiResult.issueGuidance || [],
+          recommendedExercises: geminiResult.recommendedExercises || [],
+          overallWorkingTips: geminiResult.overallWorkingTips || [],
           youtubeSearches: geminiResult.youtubeSearches || [],
           youtubeGroups
         };
@@ -478,10 +761,149 @@ export const AssessView = {
       return phases[currentPhase.value] || { text: 'Processing...', step: 0, total: 3 };
     }
 
-    // Helper: Download report as JSON
-    function downloadReport(reportData, filename = 'assessment-report.json') {
-      const dataStr = JSON.stringify(reportData, null, 2);
-      const dataBlob = new Blob([dataStr], { type: 'application/json' });
+    function formatBulletList(items = [], limit = null) {
+      const list = Array.isArray(items) ? items : [];
+      const rows = limit ? list.slice(0, limit) : list;
+      return rows.map((item) => `- ${item}`);
+    }
+
+    function buildTextReport(reportData) {
+      const lines = [];
+      const status = reportData?.status === 'partial' ? 'Partial Analysis' : 'Analysis Complete';
+
+      lines.push('Assessment Report');
+      lines.push(status);
+      lines.push('');
+      lines.push('Wellbeing guidance only. For persistent pain, seek a licensed clinician.');
+      lines.push('');
+
+      if (reportData?.frontResult?.success) {
+        lines.push('Front View Score');
+        lines.push(`${reportData.frontResult.score}%`);
+        lines.push(...formatBulletList(reportData.frontResult.findings || [], 2));
+        lines.push('');
+      }
+
+      if (reportData?.sideResult?.success) {
+        lines.push('Side View Score');
+        lines.push(`${reportData.sideResult.score}%`);
+        lines.push(...formatBulletList(reportData.sideResult.findings || [], 2));
+        lines.push('');
+      }
+
+      if (reportData?.report?.overall_score !== undefined && reportData?.report?.overall_score !== null) {
+        lines.push('Overall Assessment');
+        lines.push(`${reportData.report.overall_score}%`);
+        lines.push('Based on both views');
+        lines.push('');
+      }
+
+      if (geminiAssessment.value || assessmentExerciseList.value.length) {
+        lines.push('Gemini Validation');
+        lines.push(geminiAssessment.value?.analysis || 'AI review unavailable. Showing baseline exercise guidance.');
+        if (geminiAssessment.value?.confirmedScore !== null && geminiAssessment.value?.confirmedScore !== undefined) {
+          lines.push('');
+          lines.push(`Confirmed overall score: ${geminiAssessment.value.confirmedScore}%`);
+        }
+        lines.push('');
+      }
+
+      if (topGeminiVideos.value.length) {
+        lines.push('Here are 3 relevant videos for your assessment:');
+        topGeminiVideos.value.forEach((video) => {
+          lines.push(`- ${video.title}`);
+          lines.push(`  ${video.url}`);
+        });
+        lines.push('');
+      }
+
+      if (issueCausesAndEffects.value.length) {
+        lines.push('Causes and likely effects of your current posture');
+        issueCausesAndEffects.value.slice(0, 4).forEach((item) => {
+          lines.push(item.area || 'Posture Issue');
+          if (item.cause) {
+            lines.push(`Cause: ${item.cause}`);
+          }
+          (Array.isArray(item.effects) ? item.effects : []).slice(0, 3).forEach((effect) => {
+            lines.push(`- ${effect}`);
+          });
+          lines.push('');
+        });
+      }
+
+      if (correctiveExerciseCards.value.length) {
+        lines.push('Corrective Exercises');
+        correctiveExerciseCards.value.forEach((exercise) => {
+          lines.push(exercise.name || 'Exercise');
+          lines.push(exercise.whatItDoes || 'Supports posture correction and reduces recurrent muscular strain when done consistently.');
+          if (Array.isArray(exercise.videos) && exercise.videos.length > 0) {
+            exercise.videos.forEach((video) => {
+              lines.push(`- ${video.title}`);
+              lines.push(`  ${video.url}`);
+            });
+          } else if (Array.isArray(exercise.fallbackQueries) && exercise.fallbackQueries.length > 0) {
+            const fallback = exercise.fallbackQueries[0];
+            lines.push(`- ${fallback.query}`);
+            lines.push(`  ${buildYoutubeSearchUrl(fallback.query)}`);
+          }
+          lines.push('');
+        });
+      }
+
+      if (issueGuidanceCards.value.length) {
+        lines.push('Body-area Guidance');
+        issueGuidanceCards.value.slice(0, 4).forEach((issue) => {
+          lines.push(issue.body_area || issue.issue_title || 'Posture Issue');
+          if (issue.severity_level) {
+            lines.push(issue.severity_level);
+          }
+          if (issue.issue_title) {
+            lines.push(issue.issue_title);
+          }
+          if (issue.likely_cause) {
+            lines.push(`Cause: ${issue.likely_cause}`);
+          }
+
+          if (Array.isArray(issue.symptoms) && issue.symptoms.length > 0) {
+            lines.push('Symptoms');
+            issue.symptoms.slice(0, 4).forEach((symptom) => lines.push(`- ${symptom}`));
+          }
+
+          if (Array.isArray(issue.corrective_exercises) && issue.corrective_exercises.length > 0) {
+            lines.push('Corrective Exercises');
+            issue.corrective_exercises.slice(0, 4).forEach((exercise) => lines.push(`- ${exercise}`));
+          }
+
+          if (Array.isArray(issue.videos) && issue.videos.length > 0) {
+            issue.videos.forEach((video) => {
+              lines.push(`- ${video.title}`);
+              lines.push(`  ${video.url}`);
+            });
+          } else if (Array.isArray(issue.fallbackSearches) && issue.fallbackSearches.length > 0) {
+            issue.fallbackSearches.slice(0, 2).forEach((search) => {
+              lines.push(`- ${search.query}`);
+              lines.push(`  ${buildYoutubeSearchUrl(search.query)}`);
+            });
+          }
+
+          lines.push('');
+        });
+      }
+
+      if (Array.isArray(geminiAssessment.value?.overallWorkingTips) && geminiAssessment.value.overallWorkingTips.length > 0) {
+        lines.push('Overall Working Tips');
+        geminiAssessment.value.overallWorkingTips.slice(0, 6).forEach((tip) => lines.push(`- ${tip}`));
+        lines.push('');
+      }
+
+      lines.push(`Generated: ${new Date().toLocaleString()}`);
+      return lines.join('\n').trim() + '\n';
+    }
+
+    // Helper: Download report as text
+    function downloadReport(reportData, filename = 'assessment-report.txt') {
+      const dataStr = buildTextReport(reportData);
+      const dataBlob = new Blob([dataStr], { type: 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(dataBlob);
       const link = document.createElement('a');
       link.href = url;
@@ -532,7 +954,7 @@ export const AssessView = {
     // Helper: Generate filename for current report
     function getReportFilename(dateStr = null) {
       const date = dateStr || new Date().toISOString().split('T')[0];
-      return `assessment-${date}.json`;
+      return `assessment-${date}.txt`;
     }
 
     // Helper: Generate filename for report as CSV
@@ -544,7 +966,7 @@ export const AssessView = {
     // Helper: Generate filename from timestamp
     function getHistoryFilename(timestamp) {
       const dateNum = timestamp.replace(/[^0-9]/g, '');
-      return `assessment-${dateNum}.json`;
+      return `assessment-${dateNum}.txt`;
     }
 
     // Resolve backend availability so the UI can explain whether data is local or synced.
@@ -579,6 +1001,12 @@ export const AssessView = {
       geminiAssessment,
       reportHistory,
       latestAssessment,
+      assessmentExerciseList,
+      topGeminiVideos,
+      targetedExerciseSearches,
+      issueCausesAndEffects,
+      issueGuidanceCards,
+      correctiveExerciseCards,
       selectedHistoryItem,
       isLoadingHistory,
       errorState,
@@ -611,6 +1039,7 @@ export const AssessView = {
       clearReportAndStartOver,
       dismissError,
       getErrorTitle,
+      buildYoutubeSearchUrl,
       runGeminiAssessmentAnalysis,
       downloadReport,
       downloadReportAsCSV,
@@ -776,7 +1205,7 @@ export const AssessView = {
               <p class="text-[0.75rem] text-[var(--muted)] mt-1">Wellbeing guidance only. For persistent pain, seek a licensed clinician.</p>
             </div>
             <div class="flex gap-2">
-              <button class="assess-close-btn text-sm" @click="downloadReport(report, getReportFilename())" title="Download as JSON">
+              <button class="assess-close-btn text-sm" @click="downloadReport(report, getReportFilename())" title="Download as Text">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               </button>
               <button class="assess-close-btn text-sm" @click="downloadReportAsCSV(report, getReportCSVFilename())" title="Download as CSV">
@@ -828,41 +1257,131 @@ export const AssessView = {
             </div>
           </div>
 
-          <!-- Exercises Section -->
-          <div v-if="report.report?.exercises?.length" class="assess-exercises">
-            <h3 class="font-semibold mb-3">Recommended Exercises</h3>
-            <ul class="space-y-2">
-              <li v-for="(exercise, idx) in report.report.exercises.slice(0, 5)" :key="idx" class="text-[0.9rem] flex items-start gap-2">
-                <span class="text-[var(--accent)] font-bold">✓</span>
-                <span>{{ exercise }}</span>
-              </li>
-            </ul>
-          </div>
-
-          <div v-if="geminiAssessment" class="assess-exercises mt-4">
+          <div v-if="geminiAssessment || assessmentExerciseList.length" class="assess-exercises mt-4">
             <h3 class="font-semibold mb-2">Gemini Validation</h3>
-            <p class="text-[0.9rem] text-[var(--muted)] mb-2">{{ geminiAssessment.analysis || 'AI review unavailable.' }}</p>
-            <p v-if="geminiAssessment.confirmedScore !== null" class="text-[0.85rem] text-[var(--accent)] mb-3">
+            <p class="text-[0.9rem] text-[var(--muted)] mb-2">{{ geminiAssessment?.analysis || 'AI review unavailable. Showing baseline exercise guidance.' }}</p>
+            <p v-if="geminiAssessment && geminiAssessment.confirmedScore !== null" class="text-[0.85rem] text-[var(--accent)] mb-3">
               Confirmed overall score: {{ geminiAssessment.confirmedScore }}%
             </p>
 
-            <div v-if="geminiAssessment.youtubeGroups && geminiAssessment.youtubeGroups.length" class="space-y-3">
-              <div v-for="group in geminiAssessment.youtubeGroups.slice(0, 3)" :key="group.query" class="p-3 bg-[var(--surface2)] rounded-lg border border-[var(--border)]">
-                <div class="text-[0.8rem] font-semibold mb-1">Search: {{ group.query }}</div>
-                <div v-if="group.reason" class="text-[0.75rem] text-[var(--muted)] mb-2">{{ group.reason }}</div>
-                <div class="flex flex-col gap-1 text-[0.8rem]">
+            <div v-if="topGeminiVideos.length" class="mb-4 p-3 bg-[var(--surface2)] rounded-lg border border-[var(--border)]">
+              <h4 class="font-semibold text-[0.9rem] mb-2">Here are 3 relevant videos for your assessment:</h4>
+              <div class="flex flex-col gap-1 text-[0.85rem]">
+                <a
+                  v-for="video in topGeminiVideos"
+                  :key="video.videoId"
+                  :href="video.url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="underline text-[var(--accent2)]"
+                >
+                  {{ video.title }}
+                </a>
+              </div>
+            </div>
+
+            <div v-if="issueCausesAndEffects.length" class="mb-4 p-3 bg-[var(--surface2)] rounded-lg border border-[var(--border)]">
+              <h4 class="font-semibold text-[0.9rem] mb-2">Causes and likely effects of your current posture</h4>
+              <div class="space-y-3 text-[0.82rem]">
+                <div v-for="(item, idx) in issueCausesAndEffects.slice(0, 4)" :key="'cause-' + idx">
+                  <div class="font-semibold">{{ item.area }}</div>
+                  <p v-if="item.cause" class="text-[var(--muted)]">Cause: {{ item.cause }}</p>
+                  <ul v-if="item.effects && item.effects.length" class="mt-1 space-y-1 text-[var(--muted)]">
+                    <li v-for="(effect, eIdx) in item.effects.slice(0, 3)" :key="'effect-' + eIdx">• {{ effect }}</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="correctiveExerciseCards.length" class="mb-4">
+              <h4 class="font-semibold text-[0.9rem] mb-2">Corrective Exercises</h4>
+              <div class="space-y-3">
+                <div v-for="(exercise, idx) in correctiveExerciseCards" :key="'exercise-card-' + idx" class="p-3 bg-[var(--surface2)] rounded-lg border border-[var(--border)]">
+                  <div class="font-semibold text-[0.84rem] mb-1">{{ exercise.name }}</div>
+                  <p class="text-[0.8rem] text-[var(--muted)] mb-2">{{ exercise.whatItDoes }}</p>
+                  <div class="flex flex-col gap-1 text-[0.8rem]">
+                    <a
+                      v-for="video in exercise.videos"
+                      :key="video.key"
+                      :href="video.url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="underline text-[var(--accent2)]"
+                    >
+                      {{ video.title }}
+                    </a>
+                    <a
+                      v-if="(!exercise.videos || exercise.videos.length === 0) && exercise.fallbackQueries && exercise.fallbackQueries.length"
+                      :href="buildYoutubeSearchUrl(exercise.fallbackQueries[0].query)"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="underline text-[var(--accent2)]"
+                    >
+                      {{ exercise.fallbackQueries[0].query }}
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="issueGuidanceCards.length" class="space-y-3 mb-4">
+              <h4 class="font-semibold text-[0.9rem]">Body-area Guidance</h4>
+              <div v-for="(issue, idx) in issueGuidanceCards.slice(0, 4)" :key="'issue-guidance-' + idx" class="p-3 bg-[var(--surface2)] rounded-lg border border-[var(--border)]">
+                <div class="flex items-center justify-between gap-2 mb-1">
+                  <div class="font-semibold text-[0.85rem]">{{ issue.body_area || issue.issue_title || 'Posture Issue' }}</div>
+                  <span v-if="issue.severity_level" class="badge badge-muted">{{ issue.severity_level }}</span>
+                </div>
+
+                <p v-if="issue.issue_title" class="text-[0.8rem] mb-1">{{ issue.issue_title }}</p>
+                <p v-if="issue.likely_cause" class="text-[0.78rem] text-[var(--muted)] mb-2">Cause: {{ issue.likely_cause }}</p>
+
+                <div v-if="issue.symptoms && issue.symptoms.length" class="mb-2">
+                  <div class="text-[0.75rem] font-semibold mb-1">Symptoms</div>
+                  <ul class="space-y-1 text-[0.78rem] text-[var(--muted)]">
+                    <li v-for="(symptom, sIdx) in issue.symptoms.slice(0, 4)" :key="'sym-' + sIdx">• {{ symptom }}</li>
+                  </ul>
+                </div>
+
+                <div v-if="issue.corrective_exercises && issue.corrective_exercises.length" class="mb-2">
+                  <div class="text-[0.75rem] font-semibold mb-1">Corrective Exercises</div>
+                  <ul class="space-y-1 text-[0.78rem] text-[var(--muted)]">
+                    <li v-for="(exercise, eIdx) in issue.corrective_exercises.slice(0, 4)" :key="'corr-' + eIdx">• {{ exercise }}</li>
+                  </ul>
+                </div>
+
+                <div v-if="issue.videos && issue.videos.length" class="space-y-1 text-[0.78rem]">
                   <a
-                    v-for="video in group.videos.slice(0, 3)"
-                    :key="video.videoId || video.url"
+                    v-for="video in issue.videos"
+                    :key="video.key"
                     :href="video.url"
                     target="_blank"
                     rel="noopener noreferrer"
-                    class="underline text-[var(--accent2)]"
+                    class="underline text-[var(--accent2)] block"
                   >
                     {{ video.title }}
                   </a>
                 </div>
+
+                <div v-else-if="issue.fallbackSearches && issue.fallbackSearches.length" class="space-y-1 text-[0.78rem]">
+                  <a
+                    v-for="(search, yIdx) in issue.fallbackSearches.slice(0, 2)"
+                    :key="'yt-search-' + yIdx"
+                    :href="buildYoutubeSearchUrl(search.query)"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="underline text-[var(--accent2)] block"
+                  >
+                    {{ search.query }}
+                  </a>
+                </div>
               </div>
+            </div>
+
+            <div v-if="geminiAssessment && geminiAssessment.overallWorkingTips && geminiAssessment.overallWorkingTips.length" class="mb-4">
+              <h4 class="font-semibold text-[0.9rem] mb-2">Overall Working Tips</h4>
+              <ul class="space-y-1 text-[0.82rem]">
+                <li v-for="(tip, idx) in geminiAssessment.overallWorkingTips.slice(0, 6)" :key="'tip-' + idx" class="text-[var(--muted)]">• {{ tip }}</li>
+              </ul>
             </div>
           </div>
 
