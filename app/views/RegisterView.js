@@ -129,8 +129,8 @@ export const RegisterView = {
     <div class="auth-container">
       <div class="auth-card">
         <div class="auth-header">
-          <h1 class="font-[Syne] text-[2rem] font-extrabold">Create Account</h1>
-          <p class="text-[var(--muted)] text-[0.95rem]">Join WellAlign to start your posture journey</p>
+          <h1 class="font-[Syne] text-[2.35rem] font-extrabold">Create Account</h1>
+          <p class="text-[var(--muted)] text-[1.05rem]">Join WellAlign to start your posture journey</p>
         </div>
 
         <!-- Register Form -->
@@ -217,7 +217,7 @@ export const RegisterView = {
 
         <!-- Login Link -->
         <div class="auth-footer">
-          <p class="text-[0.9rem]">
+          <p class="text-[1rem]">
             Already have an account?
             <router-link to="/login" class="auth-link">Login here</router-link>
           </p>
