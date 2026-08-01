@@ -57,4 +57,4 @@ This frontend is part of a Year 3 undergraduate digital-health dissertation proj
 ## Links
 
 - **Backend** : https://github.com/Dhruv-2204/WellAlign_Backend
-- **ML Service ** : https://github.com/Dhruv-2204/WellAlign_ML_Service
+- **ML Service** : https://github.com/Dhruv-2204/WellAlign_ML_Service
