@@ -53,3 +53,8 @@ This frontend is part of a Year 3 undergraduate digital-health dissertation proj
 - **Monitor**: continuous real-time tracking.
 - **Prescribe**: AI-interpreted guidance and resource recommendations.
 - **WellAlign**: the project name, emphasizing alignment towards wellness through corrected posture.
+
+## Links
+
+- **Backend** : https://github.com/Dhruv-2204/WellAlign_Backend
+- **ML Service ** : https://github.com/Dhruv-2204/WellAlign_ML_Service
